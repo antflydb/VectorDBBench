@@ -1,0 +1,9 @@
+grpcio==1.53.2
+grpcio-tools==1.53.0
+qdrant-client
+pinecone-client
+weaviate-client
+elasticsearch
+pgvector
+pgvecto_rs[psycopg3]>=0.2.1
+sqlalchemy

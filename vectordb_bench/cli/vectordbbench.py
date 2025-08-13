@@ -19,9 +19,11 @@ from ..backend.clients.tidb.cli import TiDB
 from ..backend.clients.vespa.cli import Vespa
 from ..backend.clients.weaviate_cloud.cli import Weaviate
 from ..backend.clients.zilliz_cloud.cli import ZillizAutoIndex
+from ..backend.clients.antfly.cli import antfly
 from .batch_cli import BatchCli
 from .cli import cli
 
+cli.add_command(antfly)
 cli.add_command(PgVectorHNSW)
 cli.add_command(PgVectoRSHNSW)
 cli.add_command(PgVectoRSIVFFlat)

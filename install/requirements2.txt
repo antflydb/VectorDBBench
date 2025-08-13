@@ -1,0 +1,9 @@
+redis
+chromadb
+pytz
+streamlit-autorefresh
+streamlit>=1.23.0
+streamlit_extras
+tqdm
+s3fs
+psutil
