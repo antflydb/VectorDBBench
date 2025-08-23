@@ -120,15 +120,15 @@ class AlloyDBIndexConfig(BaseModel, DBCaseConfig):
 
 class AlloyDBScaNNConfig(AlloyDBIndexConfig):
     index: IndexType = IndexType.SCANN
-    num_leaves: int | None
-    quantizer: str | None
-    enable_pca: str | None
-    max_num_levels: int | None
-    num_leaves_to_search: int | None
-    max_top_neighbors_buffer_size: int | None
-    pre_reordering_num_neighbors: int | None
-    num_search_threads: int | None
-    max_num_prefetch_datasets: int | None
+    num_leaves: int | None = None
+    quantizer: str | None = None
+    enable_pca: str | None = None
+    max_num_levels: int | None = None
+    num_leaves_to_search: int | None = None
+    max_top_neighbors_buffer_size: int | None = None
+    pre_reordering_num_neighbors: int | None = None
+    num_search_threads: int | None = None
+    max_num_prefetch_datasets: int | None = None
     maintenance_work_mem: str | None = None
     max_parallel_workers: int | None = None
 

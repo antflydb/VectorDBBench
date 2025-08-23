@@ -60,8 +60,8 @@ class ClickhouseIndexConfig(BaseModel, DBCaseConfig):
 
 
 class ClickhouseHNSWConfig(ClickhouseIndexConfig):
-    M: int | None  # Default in clickhouse in 32
-    efConstruction: int | None  # Default in clickhouse in 128
+    M: int | None = None  # Default in clickhouse in 32
+    efConstruction: int | None = None  # Default in clickhouse in 128
     ef: int | None = None
     index: IndexType = IndexType.HNSW
     quantization: str | None = "bf16"  # Default is bf16. Possible values are f64, f32, f16, bf16, or i8

@@ -1,9 +1,9 @@
 import logging
 from vectordb_bench.models import (
     DB,
-    MetricType,
-    ElasticsearchConfig,
 )
+from vectordb_bench.backend.clients.elastic_cloud.config import ElasticCloudConfig
+from vectordb_bench.backend.clients.api import MetricType
 import numpy as np
 
 
@@ -16,7 +16,7 @@ password = ""
 class TestModels:
     def test_insert_and_search(self):
         assert DB.ElasticCloud.value == "Elasticsearch"
-        assert DB.ElasticCloud.config == ElasticsearchConfig
+        assert DB.ElasticCloud.config_cls == ElasticCloudConfig
 
         dbcls = DB.ElasticCloud.init_cls
         dbConfig = DB.ElasticCloud.config_cls(cloud_id=cloud_id, password=password)

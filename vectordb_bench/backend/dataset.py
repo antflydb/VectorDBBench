@@ -12,7 +12,7 @@ from enum import Enum
 import pandas as pd
 import polars as pl
 from pyarrow.parquet import ParquetFile
-from pydantic import PrivateAttr, validator
+from pydantic import model_validator, PrivateAttr
 
 from vectordb_bench import config
 from vectordb_bench.base import BaseModel
@@ -38,7 +38,6 @@ class BaseDataset(BaseModel):
     metric_type: MetricType
     use_shuffled: bool
     with_gt: bool = False
-    _size_label: dict[int, SizeLabel] = PrivateAttr()
     is_custom: bool = False
     with_remote_resource: bool = True
     # for label filter cases
@@ -57,12 +56,6 @@ class BaseDataset(BaseModel):
     gt_id_field: str = "id"
     gt_neighbors_field: str = "neighbors_id"
 
-    @validator("size")
-    def verify_size(cls, v: int):
-        if v not in cls._size_label:
-            msg = f"Size {v} not supported for the dataset, expected: {cls._size_label.keys()}"
-            raise ValueError(msg)
-        return v
 
     @property
     def label(self) -> str:
@@ -102,9 +95,6 @@ class CustomDataset(BaseDataset):
     scalar_labels_file: str = "scalar_labels.parquet"
     label_percentages: list[float] = []
 
-    @validator("size")
-    def verify_size(cls, v: int):
-        return v
 
     @property
     def label(self) -> str:
@@ -140,6 +130,13 @@ class LAION(BaseDataset):
         100_000_000: SizeLabel(100_000_000, "LARGE", 100),
     }
 
+    @model_validator(mode='after')
+    def verify_size(self) -> "LAION":
+        if self.size not in self._size_label:
+            msg = f"Size {self.size} not supported for the dataset, expected: {self._size_label.keys()}"
+            raise ValueError(msg)
+        return self
+
 
 class GIST(BaseDataset):
     name: str = "GIST"
@@ -150,6 +147,13 @@ class GIST(BaseDataset):
         100_000: SizeLabel(100_000, "SMALL", 1),
         1_000_000: SizeLabel(1_000_000, "MEDIUM", 1),
     }
+
+    @model_validator(mode='after')
+    def verify_size(self) -> "GIST":
+        if self.size not in self._size_label:
+            msg = f"Size {self.size} not supported for the dataset, expected: {self._size_label.keys()}"
+            raise ValueError(msg)
+        return self
 
 
 class Cohere(BaseDataset):
@@ -189,6 +193,13 @@ class Cohere(BaseDataset):
         0.999,
     ]
 
+    @model_validator(mode='after')
+    def verify_size(self) -> "Cohere":
+        if self.size not in self._size_label:
+            msg = f"Size {self.size} not supported for the dataset, expected: {self._size_label.keys()}"
+            raise ValueError(msg)
+        return self
+
 
 class Bioasq(BaseDataset):
     name: str = "Bioasq"
@@ -226,6 +237,13 @@ class Bioasq(BaseDataset):
         0.999,
     ]
 
+    @model_validator(mode='after')
+    def verify_size(self) -> "Bioasq":
+        if self.size not in self._size_label:
+            msg = f"Size {self.size} not supported for the dataset, expected: {self._size_label.keys()}"
+            raise ValueError(msg)
+        return self
+
 
 class Glove(BaseDataset):
     name: str = "Glove"
@@ -233,6 +251,13 @@ class Glove(BaseDataset):
     metric_type: MetricType = MetricType.COSINE
     use_shuffled: bool = False
     _size_label: dict = {1_000_000: SizeLabel(1_000_000, "MEDIUM", 1)}
+
+    @model_validator(mode='after')
+    def verify_size(self) -> "Glove":
+        if self.size not in self._size_label:
+            msg = f"Size {self.size} not supported for the dataset, expected: {self._size_label.keys()}"
+            raise ValueError(msg)
+        return self
 
 
 class SIFT(BaseDataset):
@@ -249,6 +274,13 @@ class SIFT(BaseDataset):
         5_000_000: SizeLabel(5_000_000, "MEDIUM", 1),
         #  50_000_000: SizeLabel(50_000_000, "LARGE", 50),
     }
+
+    @model_validator(mode='after')
+    def verify_size(self) -> "SIFT":
+        if self.size not in self._size_label:
+            msg = f"Size {self.size} not supported for the dataset, expected: {self._size_label.keys()}"
+            raise ValueError(msg)
+        return self
 
 
 class OpenAI(BaseDataset):
@@ -287,6 +319,13 @@ class OpenAI(BaseDataset):
         0.998,
         0.999,
     ]
+
+    @model_validator(mode='after')
+    def verify_size(self) -> "OpenAI":
+        if self.size not in self._size_label:
+            msg = f"Size {self.size} not supported for the dataset, expected: {self._size_label.keys()}"
+            raise ValueError(msg)
+        return self
 
 
 class DatasetManager(BaseModel):
