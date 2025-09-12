@@ -12,3 +12,11 @@ venv/
 .idea/
 results/
 logs/
+antfly
+antflycli
+antfly_0.0.0-dev4_Linux_x86_64.tar.gz
+antfly.log
+antflydb/
+completions/
+LICENSE
+README.md
