@@ -1,0 +1,36 @@
+2025-09-12T23:50:16.855Z	INFO	store	store/runner.go:114	Starting store node	{"id": "1", "config": {"version":"0.0.0-dev4","log_level":"debug","metadata":{"orchestration_urls":{"1":"http://0.0.0.0:12377"}},"termite":{"api_url":"http://0.0.0.0:11433"},"mcp":{"api_url":"stdio://","antfly_url":"http://localhost:8080"},"replication_factor":1,"enable_auth":false,"disable_shard_alloc":true,"max_shard_size_bytes":67108864,"max_shards_per_table":20,"default_shards_per_table":1}, "storeInfo": {"id":"1","raft_url":"http://0.0.0.0:9021","api_url":"http://0.0.0.0:12380"}}
+2025-09-12T23:50:16.856Z	INFO	metadataServer	metadata/metadata.go:2184	Starting metadata node	{"peers": "Peers{1}", "config": {"version":"0.0.0-dev4","log_level":"debug","metadata":{"orchestration_urls":{"1":"http://0.0.0.0:12377"}},"termite":{"api_url":"http://0.0.0.0:11433"},"mcp":{"api_url":"stdio://","antfly_url":"http://localhost:8080"},"replication_factor":1,"enable_auth":false,"disable_shard_alloc":true,"max_shard_size_bytes":67108864,"max_shards_per_table":20,"default_shards_per_table":1}, "storeInfo": {"id":"1","raft_url":"http://0.0.0.0:9017","api_url":"http://0.0.0.0:12377"}}
+2025-09-12T23:50:16.857Z	INFO	metadataServer	metadatakv/store.go:114	Starting Raft Group	{"module": "metadataStore"}
+2025-09-12T23:50:16.858Z	DEBUG	store.multitraft	raft/multiraft.go:201	Starting MultiRaft server	{"id": "1", "url": "http://0.0.0.0:9021", "storeID": "1"}
+2025-09-12T23:50:16.858Z	INFO	store.multitraft	raft/multiraft.go:241	Starting Raft HTTP server	{"id": "1"}
+2025-09-12T23:50:16.859Z	DEBUG	metadataServer.multitraft	raft/multiraft.go:201	Starting MultiRaft server	{"url": "http://0.0.0.0:9017", "storeID": "1"}
+2025-09-12T23:50:16.859Z	INFO	metadataServer.multitraft	raft/multiraft.go:241	Starting Raft HTTP server
+2025-09-12T23:50:16.869Z	INFO	metadataServer.raft.pebble-storage	raft/raftpebblestorage.go:143	Initialized storage	{"module": "metadataStore", "firstIndex": 1, "lastIndex": 0}
+2025-09-12T23:50:16.869Z	INFO	metadataServer.raft	raft/raft.go:450	Pebble log storage initialized	{"module": "metadataStore", "path": "antflydb/metadata/1/log", "existed": false}
+2025-09-12T23:50:16.870Z	INFO	metadataServer.raft	raft/raft.go:534	Starting new Raft node	{"module": "metadataStore", "peers": "Peers{1}"}
+2025-09-12T23:50:16.870Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:1981	1 switched to configuration voters=()	{"module": "metadataStore"}
+2025-09-12T23:50:16.871Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:897	1 became follower at term 0	{"module": "metadataStore"}
+2025-09-12T23:50:16.871Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:493	newRaft 1 [peers: [], term: 0, commit: 0, applied: 0, lastindex: 0, lastterm: 0]	{"module": "metadataStore"}
+2025-09-12T23:50:16.871Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:897	1 became follower at term 1	{"module": "metadataStore"}
+2025-09-12T23:50:16.871Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:1981	1 switched to configuration voters=(1)	{"module": "metadataStore"}
+2025-09-12T23:50:16.871Z	INFO	metadataServer.raft	raft/raft.go:805	Initialized from snapshot	{"module": "metadataStore", "index": 0}
+2025-09-12T23:50:16.873Z	INFO	metadataServer.raft	raft/raft.go:277	Received ConfChange	{"module": "metadataStore", "confChangeID": 0, "nodeID": 1, "type": "ConfChangeAddNode"}
+2025-09-12T23:50:16.874Z	INFO	metadataServer	metadatakv/store.go:163	Started Raft Group	{"module": "metadataStore"}
+2025-09-12T23:50:16.874Z	INFO	metadataServer.raft	raft/raft.go:119	Setting leader factory	{"module": "metadataStore", "isLeader": false}
+2025-09-12T23:50:16.875Z	INFO	metadataServer	metadata/metadata.go:2325	MetadataNode's api server starting	{"address": "http://0.0.0.0:12377"}
+2025-09-12T23:50:16.971Z	INFO	store	store/runner.go:81	Registering with metadata servers	{"id": "1", "urls": ["http://0.0.0.0:12377"]}
+2025-09-12T23:50:21.672Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:988	1 is starting a new election at term 1	{"module": "metadataStore"}
+2025-09-12T23:50:21.672Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:930	1 became pre-candidate at term 1	{"module": "metadataStore"}
+2025-09-12T23:50:21.672Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:1077	1 received MsgPreVoteResp from 1 at term 1	{"module": "metadataStore"}
+2025-09-12T23:50:21.672Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:1693	1 has received 1 MsgPreVoteResp votes and 0 vote rejections	{"module": "metadataStore"}
+2025-09-12T23:50:21.672Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:912	1 became candidate at term 2	{"module": "metadataStore"}
+2025-09-12T23:50:21.674Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:1077	1 received MsgVoteResp from 1 at term 2	{"module": "metadataStore"}
+2025-09-12T23:50:21.674Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:1693	1 has received 1 MsgVoteResp votes and 0 vote rejections	{"module": "metadataStore"}
+2025-09-12T23:50:21.674Z	INFO	metadataServer.raft.internals	v3@v3.6.0/raft.go:970	1 became leader at term 2	{"module": "metadataStore"}
+2025-09-12T23:50:21.674Z	INFO	metadataServer.raft.internals	v3@v3.6.0/node.go:370	raft.node: 1 elected leader 1 at term 2	{"module": "metadataStore"}
+2025-09-12T23:50:21.674Z	INFO	metadataServer.raft	raft/raft.go:127	Starting leader	{"module": "metadataStore"}
+2025-09-12T23:50:21.674Z	INFO	metadataServer.raft	raft/raft.go:135	Started leader goroutine	{"module": "metadataStore"}
+2025-09-12T23:50:21.678Z	INFO	metadataServer	metadata/metadata.go:205	Node registered	{"nodeID": "1", "raftURL": "http://0.0.0.0:9021", "apiURL": "http://0.0.0.0:12380"}
+2025-09-12T23:50:21.679Z	INFO	store	store/runner.go:96	Successfully registered with metadata server	{"id": "1", "registrationURL": "http://0.0.0.0:12377", "storeID": "1", "raftURL": "http://0.0.0.0:9021", "apiURL": "http://0.0.0.0:12380"}
+2025-09-12T23:50:22.698Z	DEBUG	metadataServer	metadata/metadata.go:1428	Checking shard assignments...
+	{"nonDefaultShardStates": {}, "currentShards": []}

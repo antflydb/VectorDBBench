@@ -50,6 +50,7 @@ class DB(Enum):
     LanceDB = "LanceDB"
     OceanBase = "OceanBase"
     S3Vectors = "S3Vectors"
+    Antfly = "Antfly"
 
     @property
     def init_cls(self) -> type[VectorDB]:  # noqa: PLR0911, PLR0912, C901, PLR0915
@@ -193,6 +194,11 @@ class DB(Enum):
             from .s3_vectors.s3_vectors import S3Vectors
 
             return S3Vectors
+
+        if self == DB.Antfly:
+            from .antfly.antfly import AntflyClient
+
+            return AntflyClient
 
         msg = f"Unknown DB: {self.name}"
         raise ValueError(msg)
@@ -339,6 +345,11 @@ class DB(Enum):
             from .s3_vectors.config import S3VectorsConfig
 
             return S3VectorsConfig
+
+        if self == DB.Antfly:
+            from .antfly.config import AntflyConfig
+
+            return AntflyConfig
 
         msg = f"Unknown DB: {self.name}"
         raise ValueError(msg)

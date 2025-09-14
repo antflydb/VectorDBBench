@@ -2171,6 +2171,10 @@ CASE_CONFIG_MAP = {
         CaseLabel.Load: LanceDBLoadConfig,
         CaseLabel.Performance: LanceDBPerformanceConfig,
     },
+    DB.Antfly: {
+        CaseLabel.Load: [],
+        CaseLabel.Performance: [],
+    },
 }
 
 
