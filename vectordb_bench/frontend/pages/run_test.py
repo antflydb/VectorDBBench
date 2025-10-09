@@ -13,6 +13,8 @@ from vectordb_bench.frontend.components.check_results.stPageConfig import initRu
 
 
 def main():
+    print("frontend.run_test.main")
+
     # set page config
     initRunTestPageConfig(st)
 

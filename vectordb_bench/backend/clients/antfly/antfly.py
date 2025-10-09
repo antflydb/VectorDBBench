@@ -3,6 +3,7 @@ import subprocess
 import json
 import time
 import os
+import requests
 from contextlib import contextmanager
 from typing import Any, List
 
@@ -12,7 +13,7 @@ log = logging.getLogger(__name__)
 
 
 class AntflyClient(VectorDB):
-    """Antfly client for VectorDB implemented by running antflycli."""
+    """Antfly client for VectorDB using direct API calls and CLI."""
 
     def __init__(
         self,
@@ -24,87 +25,126 @@ class AntflyClient(VectorDB):
     ):
         self.db_config = db_config
         self.case_config = db_case_config
-        self.collection_name = "vdbbench_collection"
+        self.collection_name = "vdb"
+        self.index_name = "embedding_idx"
         self.dim = dim
         self.antfly_process = None
-        self.antfly_path = "/tmp/antfly_bin/antfly"
-        self.antflycli_path = "/tmp/antfly_bin/antflycli"
-
-        if drop_old:
-            log.info("Dropping old Antfly data and stopping swarm.")
-            subprocess.run("ps aux | grep antfly | grep -v grep | awk '{print $2}' | xargs -r kill -9", shell=True, check=False)
-            # Give it a moment to shut down
-            time.sleep(2)
-            # In swarm mode, data is stored in the current directory in a folder named "data"
-            subprocess.run(["rm", "-rf", "data"], check=False)
+        self.antfly_url = db_config.get("url", "http://localhost:8080")
+        self.api_url = f"{self.antfly_url}/api/v1"
+        self.antflycli_path = db_config.get("antflycli_path", "/home/rowan/Documents/antfly/antflycli")
+        self.drop_old = drop_old
+        self.index_created = False  # Track if we've already created the index
 
 
     @contextmanager
     def init(self) -> None:
-        """create and destory connections to database."""
-        log.info("Checking for old antfly processes...")
-        subprocess.run("ps aux | grep antfly", shell=True)
-        log.info("Killing old antfly processes...")
-        subprocess.run("ps aux | grep antfly | grep -v grep | awk '{print $2}' | xargs -r kill -9", shell=True, check=False)
-        time.sleep(2)
-
-        log.info("Downloading and setting up Antfly binaries...")
-        download_url = "https://releases.antfly.io/antfly/0.0.0-dev4/antfly_0.0.0-dev4_Linux_x86_64.tar.gz"
-        tmp_tar_path = "/tmp/antfly.tar.gz"
-        tmp_bin_dir = "/tmp/antfly_bin"
-        subprocess.run(["curl", "-L", download_url, "-o", tmp_tar_path], check=True)
-        subprocess.run(["mkdir", "-p", tmp_bin_dir], check=True)
-        subprocess.run(["tar", "-xzf", tmp_tar_path, "-C", tmp_bin_dir], check=True)
-        subprocess.run(["chmod", "-R", "+x", tmp_bin_dir], check=True)
-        log.info("Antfly binaries are ready.")
-
-        log.info("Starting antfly swarm...")
-        self.antfly_log_file = "antfly_swarm.log"
-        with open(self.antfly_log_file, "w") as f:
-            self.antfly_process = subprocess.Popen(
-                [self.antfly_path, "swarm"],
-                stdout=f,
-                stderr=subprocess.STDOUT,
-            )
-
-        # Wait for antfly to be ready
-        retries = 20
+        """Initialize connection to Antfly database (assumes server is already running)."""
+        # Wait for Antfly to be ready
+        log.info("Waiting for Antfly server to be ready...")
+        retries = 30
         while retries > 0:
-            time.sleep(5)
-            # The health check endpoint for antfly is /api/v1/health
-            res = subprocess.run('curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/v1/health', shell=True, capture_output=True, text=True)
-            if res.stdout.strip() == "200":
-                log.info("Antfly swarm started.")
-                break
+            try:
+                response = requests.get(f"{self.antfly_url}/health", timeout=2)
+                if response.status_code == 200:
+                    log.info("Antfly server is ready.")
+                    break
+            except requests.exceptions.RequestException:
+                pass
             retries -= 1
+            time.sleep(1)
         else:
-            log.error("Failed to start antfly swarm.")
-            with open(self.antfly_log_file, "r") as f:
-                log.error("Antfly logs:\n" + f.read())
-            raise RuntimeError("Failed to start antfly swarm.")
+            raise RuntimeError("Failed to connect to Antfly server. Is it running?")
 
-        # Create table
+        # Drop old table if requested
+        if self.drop_old:
+            log.info(f"Dropping old table {self.collection_name}")
+            try:
+                response = requests.delete(
+                    f"{self.api_url}/table/{self.collection_name}",
+                    timeout=30,
+                )
+                if response.status_code == 204:
+                    log.info(f"Table {self.collection_name} dropped successfully")
+                elif response.status_code in (404, 400) and "not found" in response.text.lower():
+                    log.info(f"Table {self.collection_name} does not exist (already clean)")
+                else:
+                    log.warning(f"Unexpected response dropping table: {response.status_code} - {response.text}")
+            except requests.exceptions.RequestException as e:
+                log.warning(f"Failed to drop table (may not exist): {e}")
+            # Reset index creation flag since we're starting fresh
+            self.index_created = False
+
+        # Create table using API with proper schema
         log.info(f"Creating table {self.collection_name}")
-        subprocess.run(
-            [
-                self.antflycli_path,
-                "table",
-                "create",
-                "--table",
-                self.collection_name,
-            ],
-            check=True,
-        )
+        try:
+            table_config = {
+                "schema": {
+                    "key": "id"
+                }
+            }
+            response = requests.post(
+                f"{self.api_url}/table/{self.collection_name}",
+                json=table_config,
+                timeout=30,
+            )
+            if response.status_code == 200:
+                log.info(f"Table {self.collection_name} created successfully")
+                # Wait for table to be fully initialized (Raft consensus)
+                log.info("Waiting for table shards to initialize...")
+                time.sleep(5)
+            elif response.status_code == 400 and "already exists" in response.text.lower():
+                log.info(f"Table {self.collection_name} already exists")
+            else:
+                response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            log.error(f"Failed to create table: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                log.error(f"Response: {e.response.text}")
+            raise RuntimeError(f"Failed to create table: {e}")
 
+        # Create index before any data insertion (only if not already created)
+        if not self.index_created:
+            log.info(f"Creating index {self.index_name} on {self.collection_name}")
+            try:
+                index_config = {
+                    "name": self.index_name,
+                    "type": "vector_v2",
+                    "dimension": self.dim,
+                    "field": "embedding",
+                }
+
+                response = requests.post(
+                    f"{self.api_url}/table/{self.collection_name}/index/{self.index_name}",
+                    json=index_config,
+                    timeout=30,
+                )
+
+                if response.status_code == 201:
+                    log.info(f"Index {self.index_name} created successfully")
+                    self.index_created = True
+                elif "already exists" in response.text.lower():
+                    log.info(f"Index {self.index_name} already exists")
+                    self.index_created = True
+                else:
+                    # Don't fail on errors - just log and continue
+                    # Index might be created eventually by Antfly
+                    log.warning(f"Index creation returned {response.status_code}: {response.text[:200]}")
+                    self.index_created = True  # Assume it will work
+
+            except requests.exceptions.RequestException as e:
+                # Don't fail on errors - just log and continue
+                log.warning(f"Index creation failed: {e}")
+                if hasattr(e, 'response') and e.response is not None:
+                    log.warning(f"Response: {e.response.text[:200]}")
+                self.index_created = True  # Assume it will work eventually
+        else:
+            log.info(f"Index {self.index_name} already created, skipping")
+
+        log.info(f"Table {self.collection_name} ready")
 
         yield
 
-        log.info("Stopping antfly swarm...")
-        if self.antfly_process:
-            self.antfly_process.terminate()
-            self.antfly_process.wait()
-            subprocess.run("ps aux | grep antfly | grep -v grep | awk '{print $2}' | xargs -r kill -9", shell=True, check=False)
-            log.info("Antfly swarm stopped.")
+        log.info("Cleanup complete (server left running)")
 
     def ready_to_search(self) -> bool:
         log.info("Antfly is always ready to search")
@@ -121,69 +161,28 @@ class AntflyClient(VectorDB):
         **kwargs: Any,
     ) -> tuple[int, Exception]:
         log.info(f"Inserting {len(embeddings)} embeddings into {self.collection_name}")
-        data = []
+
+        # Prepare data for batch insert
+        inserts = {}
         for i, emb in enumerate(embeddings):
-            data.append({"id": metadata[i], "embedding": emb})
+            key = str(metadata[i])
+            inserts[key] = {
+                "id": metadata[i],
+                "embedding": emb,
+            }
 
-        tmp_file = "temp_data.json"
-        with open(tmp_file, "w") as f:
-            for item in data:
-                f.write(json.dumps(item) + "\n")
-
+        # Use API for batch insert
         try:
-            subprocess.run(
-                [
-                    self.antflycli_path,
-                    "load",
-                    "--table",
-                    self.collection_name,
-                    "--file-path",
-                    tmp_file,
-                    "--id-field",
-                    "id",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
+            response = requests.post(
+                f"{self.api_url}/table/{self.collection_name}/batch",
+                json={"inserts": inserts},
+                timeout=300,
             )
-        except subprocess.CalledProcessError as e:
-            log.error(f"Failed to load data into antfly: {e}")
-            log.error(f"Antfly stderr: {e.stderr}")
+            response.raise_for_status()
+            log.info(f"Successfully inserted {len(embeddings)} embeddings")
+        except requests.exceptions.RequestException as e:
+            log.error(f"Failed to insert data into Antfly: {e}")
             return 0, e
-        finally:
-            os.remove(tmp_file)
-
-        log.info(f"Creating index on {self.collection_name}")
-        try:
-            # Antfly needs an index to perform vector search.
-            # We create an index on the 'embedding' field.
-            # We use the 'spann' type, which is the vector index type for Antfly.
-            subprocess.run(
-                [
-                    self.antflycli_path,
-                    "index",
-                    "create",
-                    "--table",
-                    self.collection_name,
-                    "--index",
-                    "embedding_idx",
-                    "--field",
-                    "embedding",
-                    "--dimension",
-                    str(self.dim),
-                    "--type",
-                    "spann",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            log.error(f"Failed to create index in antfly: {e}")
-            log.error(f"Antfly stderr: {e.stderr}")
-            # This is a fatal error for search.
-            return 0, e
-
 
         return len(embeddings), None
 
@@ -196,46 +195,47 @@ class AntflyClient(VectorDB):
         **kwargs: Any,
     ) -> list[int]:
         log.info(f"Searching for embedding in {self.collection_name}")
-        # We need to pass the vector as a string to the CLI.
-        # The semantic search expects a text query, but we are passing a vector string.
-        # This is a workaround, and it's not guaranteed to work.
-        query_str = json.dumps(query)
+
+        # Use the API to perform vector search
+        # Based on QueryRequest schema in OpenAPI spec
+        query_request = {
+            "embeddings": {
+                self.index_name: query
+            },
+            "limit": k,
+            "fields": ["id"],
+        }
 
         try:
-            result = subprocess.run(
-                [
-                    self.antflycli_path,
-                    "query",
-                    "--table",
-                    self.collection_name,
-                    "--vector",
-                    query_str,
-                    "--indexes",
-                    "embedding_idx",
-                    "--fields",
-                    "id",
-                    "--limit",
-                    str(k),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
+            response = requests.post(
+                f"{self.api_url}/table/{self.collection_name}/query",
+                json=query_request,
+                timeout=timeout or 30,
             )
-            output_lines = result.stdout.strip().split("\n")
+            response.raise_for_status()
+            result = response.json()
+
+            # Parse the response based on QueryResponses schema
+            # The response has: {"responses": [{"hits": {"hits": [...]}}]}
             ids = []
-            for line in output_lines:
-                try:
-                    res = json.loads(line)
-                    # The result format is not documented, so we are guessing here.
-                    # We assume the 'id' field is returned in the document.
-                    # Example format: {"document":{"id":123},"score":0.8}
-                    if 'document' in res and 'id' in res['document']:
-                         ids.append(int(res['document']['id']))
-                except (json.JSONDecodeError, KeyError, ValueError) as e:
-                    log.warning(f"Could not parse antfly search result line: {line}. The format is assumed to be JSON lines with a 'document' object containing an 'id' field. Error: {e}")
-                    continue
+            if "responses" in result and len(result["responses"]) > 0:
+                first_response = result["responses"][0]
+                if "hits" in first_response and first_response["hits"] is not None:
+                    if "hits" in first_response["hits"] and first_response["hits"]["hits"] is not None:
+                        for hit in first_response["hits"]["hits"]:
+                            # hit has _id, _score, _source
+                            # The _source should contain our document with "id" field
+                            if "_source" in hit and "id" in hit["_source"]:
+                                try:
+                                    ids.append(int(hit["_source"]["id"]))
+                                except (ValueError, TypeError) as e:
+                                    log.warning(f"Could not parse id from hit: {hit}. Error: {e}")
+
+            log.info(f"Found {len(ids)} results")
             return ids
-        except subprocess.CalledProcessError as e:
-            log.error(f"Failed to search in antfly: {e}")
-            log.error(f"Antfly stderr: {e.stderr}")
+
+        except requests.exceptions.RequestException as e:
+            log.error(f"Failed to search in Antfly: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                log.error(f"Response: {e.response.text}")
             return []
