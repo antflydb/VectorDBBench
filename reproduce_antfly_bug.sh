@@ -51,32 +51,37 @@ log_warning() {
 # Check dependencies
 check_dependencies() {
     if ! command -v curl &> /dev/null; then
-        log_error "curl is required but not installed. Install it with: sudo pacman -S curl"
+        log_error "curl is required but not installed"
         exit 1
     fi
-    if ! command -v jq &> /dev/null; then
-        log_error "jq is required but not installed. Install it with: sudo pacman -S jq"
+    if ! command -v python3 &> /dev/null; then
+        log_error "python3 is required but not installed"
         exit 1
     fi
 }
 
-# Generate a random float between 0 and 1
-random_float() {
-    awk -v seed="$RANDOM" 'BEGIN { srand(seed); printf "%.6f", rand() }'
-}
+# Generate batch payload using Python (much faster than bash loops)
+generate_batch_payload() {
+    local start_id=$1
+    local batch_size=$2
+    local dimension=$3
 
-# Generate a random embedding vector as a JSON array
-generate_embedding() {
-    local dim=$1
-    local vec="["
-    for ((i=0; i<dim; i++)); do
-        if [ $i -gt 0 ]; then
-            vec="${vec},"
-        fi
-        vec="${vec}$(random_float)"
-    done
-    vec="${vec}]"
-    echo "$vec"
+    python3 -c "
+import json
+import random
+
+start_id = $start_id
+batch_size = $batch_size
+dimension = $dimension
+
+inserts = {}
+for i in range(batch_size):
+    doc_id = start_id + i
+    embedding = [random.random() for _ in range(dimension)]
+    inserts[str(doc_id)] = {'id': doc_id, 'embedding': embedding}
+
+print(json.dumps({'inserts': inserts}))
+"
 }
 
 # Wait for Antfly server to be ready
@@ -95,25 +100,31 @@ wait_for_health() {
     return 1
 }
 
+# Wait for table shard to elect Raft leader
+wait_for_shard_leader() {
+    log_info "Waiting a bit for table shard to elect Raft leader..."
+    sleep 5
+    log_info "Proceeding with index creation"
+}
+
 # Create table
 create_table() {
-    log_info "Creating table '${TABLE_NAME}'"
+    log_info "Creating table 'vdb'"
     local response
     local http_code
 
-    http_code=$(curl -s -w "%{http_code}" -o /tmp/create_table_response.json \
-        -X POST "${API_URL}/table/${TABLE_NAME}" \
+    http_code=$(curl -s -w "%{http_code}" -o /tmp/response.json \
+        -X POST "http://localhost:8080/api/v1/table/vdb" \
         -H "Content-Type: application/json" \
-        -d '{"schema":{"key":"id"}}' \
-        --max-time 30)
+        -d '{"schema":{"key":"id"}}')
 
-    response=$(cat /tmp/create_table_response.json)
+    response=$(cat /tmp/response.json)
 
     if [ "$http_code" = "200" ]; then
-        log_info "Table '${TABLE_NAME}' created successfully"
+        log_info "Table created successfully"
         return 0
     elif [ "$http_code" = "400" ] && echo "$response" | grep -qi "already exists"; then
-        log_info "Table '${TABLE_NAME}' already exists"
+        log_info "Table already exists"
         return 0
     else
         log_error "Failed to create table: HTTP $http_code - $response"
@@ -123,27 +134,26 @@ create_table() {
 
 # Create vector index
 create_index() {
-    log_info "Creating index '${INDEX_NAME}' on table '${TABLE_NAME}' (dimension: ${DIMENSION})"
+    log_info "Creating index 'embedding_idx' (dimension: 1536)"
     local response
     local http_code
 
-    http_code=$(curl -s -w "%{http_code}" -o /tmp/create_index_response.json \
-        -X POST "${API_URL}/table/${TABLE_NAME}/index/${INDEX_NAME}" \
+    http_code=$(curl -s -w "%{http_code}" -o /tmp/response.json \
+        -X POST "http://localhost:8080/api/v1/table/vdb/index/embedding_idx" \
         -H "Content-Type: application/json" \
-        -d "{\"name\":\"${INDEX_NAME}\",\"type\":\"vector_v2\",\"dimension\":${DIMENSION},\"field\":\"embedding\"}" \
-        --max-time 30)
+        -d '{"name":"embedding_idx","type":"vector_v2","dimension":1536,"field":"embedding"}')
 
-    response=$(cat /tmp/create_index_response.json)
+    response=$(cat /tmp/response.json)
 
     if [ "$http_code" = "201" ]; then
-        log_info "Index '${INDEX_NAME}' created successfully"
+        log_info "Index created successfully"
         return 0
     elif echo "$response" | grep -qi "already exists"; then
-        log_info "Index '${INDEX_NAME}' already exists"
+        log_info "Index already exists"
         return 0
     else
         log_warning "Index creation returned HTTP $http_code: ${response:0:200}"
-        return 0  # Continue anyway, like VectorDBBench does
+        return 0  # Continue anyway
     fi
 }
 
@@ -153,40 +163,34 @@ insert_batch() {
     local batch_size=$2
     local end_id=$((start_id + batch_size - 1))
 
-    log_info "Inserting ${batch_size} embeddings into '${TABLE_NAME}' (IDs: ${start_id}-${end_id})"
+    log_info "Inserting ${batch_size} embeddings (IDs: ${start_id}-${end_id})"
 
-    # Build JSON payload
-    local json_payload='{"inserts":{'
-    for ((i=0; i<batch_size; i++)); do
-        local doc_id=$((start_id + i))
-        local embedding
-        embedding=$(generate_embedding "$DIMENSION")
-
-        if [ $i -gt 0 ]; then
-            json_payload="${json_payload},"
-        fi
-        json_payload="${json_payload}\"${doc_id}\":{\"id\":${doc_id},\"embedding\":${embedding}}"
-    done
-    json_payload="${json_payload}}}"
-
-    # Save to temporary file to avoid command line length issues
-    echo "$json_payload" > /tmp/batch_insert.json
+    # Generate JSON payload using Python (fast)
+    generate_batch_payload "$start_id" "$batch_size" "$DIMENSION" > /tmp/batch_insert.json
 
     # Send the request
+    local start_time
+    start_time=$(date +%s)
     local http_code
-    http_code=$(curl -s -w "%{http_code}" -o /tmp/insert_response.json \
-        -X POST "${API_URL}/table/${TABLE_NAME}/batch" \
+    http_code=$(curl -s -w "%{http_code}" -o /tmp/response.json \
+        -X POST "http://localhost:8080/api/v1/table/vdb/batch" \
         -H "Content-Type: application/json" \
-        --data-binary @/tmp/batch_insert.json \
-        --max-time 300)
+        --data-binary @/tmp/batch_insert.json)
+    local end_time
+    end_time=$(date +%s)
+    local duration=$((end_time - start_time))
 
-    if [ "$http_code" = "200" ]; then
+    if [ $duration -gt 5 ]; then
+        log_warning "Insert took ${duration} seconds (unusually long!)"
+    fi
+
+    if [ "$http_code" = "200" ] || [ "$http_code" = "201" ]; then
         log_info "Successfully inserted ${batch_size} embeddings"
         return 0
     else
         local response
-        response=$(cat /tmp/insert_response.json 2>/dev/null || echo "")
-        log_error "Failed to insert data into Antfly: HTTP $http_code - $response"
+        response=$(cat /tmp/response.json 2>/dev/null || echo "")
+        log_error "Failed to insert: HTTP $http_code - $response"
         return 1
     fi
 }
@@ -213,12 +217,22 @@ main() {
     # Step 2: Create table
     create_table || exit 1
 
-    # Step 3: Wait for Raft consensus
-    log_info "Waiting 5 seconds for table shards to initialize (Raft consensus)..."
-    sleep 5
+    # Step 3: Wait for Raft leader election
+    wait_for_shard_leader
 
     # Step 4: Create index
     create_index || exit 1
+
+    # Step 4.5: Verify index is ready (wait for background initialization)
+    log_info "Waiting 10 seconds for index to initialize..."
+    sleep 10
+
+    # Quick verification
+    if curl -s "http://localhost:8080/api/v1/table/vdb/index/embedding_idx" | grep -q "embedding_idx"; then
+        log_info "Index verified and ready"
+    else
+        log_warning "Could not verify index (may still be initializing)"
+    fi
 
     # Step 5: Insert embeddings in batches
     echo "================================================================================"
@@ -260,7 +274,7 @@ main() {
     echo "================================================================================"
 
     # Cleanup
-    rm -f /tmp/create_table_response.json /tmp/create_index_response.json /tmp/batch_insert.json /tmp/insert_response.json
+    rm -f /tmp/response.json /tmp/batch_insert.json
 }
 
 # Run main function
