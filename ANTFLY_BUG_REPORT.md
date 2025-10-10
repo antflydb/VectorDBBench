@@ -74,12 +74,29 @@ Earlier in testing, we encountered Raft consensus errors when creating indexes i
 
 This was mitigated by adding a 5-second wait after table creation before creating the index.
 
-## Theories
+## Root Cause: CONFIRMED OOM (Out of Memory) Issue ✓
 
-1. **Memory pressure**: With 16GB RAM and large vector data (1536-dim × 50K vectors), the system may be running out of memory
-2. **Silent crash**: The Antfly process may be crashing without logging errors (SIGKILL, OOM killer, etc.)
-3. **Raft consensus issues**: The distributed consensus system may be encountering issues under load
-4. **Resource exhaustion**: File descriptors, goroutines, or other system resources may be exhausted
+**UPDATE 2025-10-09 19:24:** Confirmed via system logs that **Antfly is killed by the Linux OOM killer** due to a severe memory leak.
+
+### Evidence from journalctl:
+```
+Oct 09 19:24:50 rocinante kernel: Out of memory: Killed process 306187 (antfly)
+    total-vm:19855980kB, anon-rss:14131176kB, file-rss:1456kB
+```
+
+### Critical Memory Leak Statistics:
+- **Crash point:** After inserting only 7,000 vectors (14% of 50K dataset)
+- **Expected memory usage:** ~42 MB (7,000 vectors × 1536 dim × 4 bytes)
+- **Actual memory consumed:** ~13.8 GB (13,800 MB)
+- **Memory amplification:** **329x** (Antfly uses 329× more RAM than the actual data!)
+- **Virtual memory at crash:** ~19.4 GB
+
+### Platform-Specific Issue:
+- **MacOS binary:** Works perfectly, completes all 50,000 vectors without leak
+- **Arch Linux binary:** Crashes at ~7,000 vectors due to OOM killer
+- **Same version:** 0.0.0-dev4 on both platforms
+
+This is a **critical platform-specific memory leak** in the Arch Linux build.
 
 ## Variability
 
@@ -87,13 +104,37 @@ This was mitigated by adding a 5-second wait after table creation before creatin
 - **Earlier Success**: During initial testing, the benchmark progressed much further (got through data loading and started search performance tests) before encountering similar crashes
 - **Data Corruption**: In one instance, received `"decoding embedding hashID for 256: insufficient bytes to decode uint64 int value"` errors, suggesting possible data corruption under stress
 
-## Next Steps
+## Reproduction Script
 
-- Test on macOS (different hardware/OS) to determine if issue is system-specific
-- Monitor system resources (RAM, CPU, file descriptors) during benchmark
-- Check for OOM killer activity in system logs (`dmesg`, `journalctl`)
-- Test with smaller datasets to see if issue is load-related
-- Run Antfly with increased logging/debugging to capture crash information
+A simplified reproduction script has been created: `reproduce_antfly_bug.sh`
+
+### Usage:
+```bash
+./reproduce_antfly_bug.sh [HOST] [PORT] [NUM_VECTORS] [BATCH_SIZE]
+./reproduce_antfly_bug.sh localhost 8080 50000 100  # Default values
+```
+
+### Features:
+- **Memory monitoring**: Tracks Antfly RSS/VSZ every 10 batches
+- **Timing warnings**: Alerts when inserts take >5 seconds (memory pressure indicator)
+- **Minimal dependencies**: Only requires curl and python3
+- **Detailed logging**: Shows exactly when and how the crash occurs
+
+The script successfully reproduces the OOM crash on Arch Linux consistently.
+
+## Next Steps for Antfly Developers
+
+1. **Profile the Linux binary** with pprof/heaptrack to identify the leak source
+2. **Compare build configurations** between macOS and Linux binaries
+3. **Check platform-specific code** in vector storage, indexing, and Raft consensus
+4. **Test with valgrind/AddressSanitizer** on Linux to catch memory errors
+5. **Review goroutine lifecycle** for unbounded growth on Linux
+
+## Additional Files
+
+- `reproduce_antfly_bug.sh` - Minimal reproduction script with memory monitoring
+- `OOM_ANALYSIS.md` - Detailed analysis of the memory leak
+- `REPRODUCE_BUG_README.md` - Usage instructions for reproduction scripts
 
 ## Client Implementation Notes
 

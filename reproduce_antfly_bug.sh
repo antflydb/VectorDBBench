@@ -60,6 +60,15 @@ check_dependencies() {
     fi
 }
 
+# Get Antfly process memory usage
+get_antfly_memory() {
+    local antfly_pid=$(pgrep -x antfly)
+    if [ -n "$antfly_pid" ]; then
+        # Get RSS (resident memory) and VSZ (virtual memory) in KB
+        ps -p "$antfly_pid" -o pid,rss,vsz,comm --no-headers 2>/dev/null
+    fi
+}
+
 # Generate batch payload using Python (much faster than bash loops)
 generate_batch_payload() {
     local start_id=$1
@@ -243,6 +252,17 @@ main() {
     local batch_count=0
     local num_batches=$(( (NUM_VECTORS + BATCH_SIZE - 1) / BATCH_SIZE ))
 
+    # Get initial memory usage
+    local mem_info=$(get_antfly_memory)
+    if [ -n "$mem_info" ]; then
+        local pid=$(echo "$mem_info" | awk '{print $1}')
+        local rss_kb=$(echo "$mem_info" | awk '{print $2}')
+        local vsz_kb=$(echo "$mem_info" | awk '{print $3}')
+        local rss_mb=$((rss_kb / 1024))
+        local vsz_mb=$((vsz_kb / 1024))
+        log_info "Initial Antfly memory: RSS=${rss_mb}MB, VSZ=${vsz_mb}MB (PID: ${pid})"
+    fi
+
     for ((batch_num=0; batch_num<num_batches; batch_num++)); do
         # Determine batch size (last batch might be smaller)
         local current_batch_size=$BATCH_SIZE
@@ -258,14 +278,27 @@ main() {
         # Insert the batch
         if ! insert_batch "$total_inserted" "$current_batch_size"; then
             log_error "CRASH DETECTED: Failed after ${total_inserted} vectors (${batch_count} batches)"
-            log_error "This is the bug we're trying to reproduce!"
             exit 1
         fi
 
         total_inserted=$((total_inserted + current_batch_size))
         batch_count=$((batch_count + 1))
 
-        log_info "Progress: ${total_inserted}/${NUM_VECTORS} vectors inserted (${batch_count}/${num_batches} batches)"
+        # Log progress with memory usage every 10 batches
+        if [ $((batch_count % 10)) -eq 0 ]; then
+            local mem_info=$(get_antfly_memory)
+            if [ -n "$mem_info" ]; then
+                local rss_kb=$(echo "$mem_info" | awk '{print $2}')
+                local vsz_kb=$(echo "$mem_info" | awk '{print $3}')
+                local rss_mb=$((rss_kb / 1024))
+                local vsz_mb=$((vsz_kb / 1024))
+                log_info "Progress: ${total_inserted}/${NUM_VECTORS} vectors inserted (${batch_count}/${num_batches} batches) | Antfly Memory: RSS=${rss_mb}MB, VSZ=${vsz_mb}MB"
+            else
+                log_info "Progress: ${total_inserted}/${NUM_VECTORS} vectors inserted (${batch_count}/${num_batches} batches)"
+            fi
+        else
+            log_info "Progress: ${total_inserted}/${NUM_VECTORS} vectors inserted (${batch_count}/${num_batches} batches)"
+        fi
     done
 
     echo "================================================================================"
