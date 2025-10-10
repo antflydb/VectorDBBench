@@ -69,6 +69,69 @@ get_antfly_memory() {
     fi
 }
 
+# Check and fix Transparent Huge Pages (THP) setting
+check_and_fix_thp() {
+    local thp_enabled="/sys/kernel/mm/transparent_hugepage/enabled"
+
+    # Check if THP control file exists
+    if [ ! -f "$thp_enabled" ]; then
+        log_warning "Cannot check Transparent Huge Pages setting (file not found)"
+        return 0
+    fi
+
+    # Read current setting
+    local current_setting=$(cat "$thp_enabled")
+
+    # Check if THP is set to 'always' (problematic)
+    if echo "$current_setting" | grep -q '\[always\]'; then
+        echo ""
+        log_warning "=============================================================================="
+        log_warning "TRANSPARENT HUGE PAGES (THP) ISSUE DETECTED!"
+        log_warning "=============================================================================="
+        log_warning "Your system has THP set to 'always', which causes Antfly to use 329x more"
+        log_warning "memory than necessary, leading to Out-Of-Memory crashes."
+        log_warning ""
+        log_warning "Current setting: $current_setting"
+        log_warning "Recommended:     always [madvise] never"
+        log_warning ""
+        log_warning "This script can fix this temporarily (until reboot) by setting THP to 'madvise'."
+        log_warning "This requires sudo privileges."
+        log_warning "=============================================================================="
+        echo ""
+
+        # Prompt user
+        read -p "Change THP to 'madvise' now? (y/n): " -n 1 -r
+        echo ""
+
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Attempting to change THP setting to 'madvise'..."
+
+            if echo madvise | sudo tee "$thp_enabled" > /dev/null 2>&1; then
+                local new_setting=$(cat "$thp_enabled")
+                log_info "Successfully changed THP setting!"
+                log_info "New setting: $new_setting"
+                echo ""
+                log_info "Note: This change is temporary and will be lost on reboot."
+                log_info "To make it permanent, see: DEBUG_ARCH_ENVIRONMENT.md"
+                echo ""
+            else
+                log_error "Failed to change THP setting. You may need to run with sudo privileges."
+                log_error "Continuing anyway, but expect memory issues..."
+                sleep 2
+            fi
+        else
+            log_warning "Continuing with THP='always'. Expect high memory usage and possible OOM crashes!"
+            sleep 2
+        fi
+    elif echo "$current_setting" | grep -q '\[madvise\]'; then
+        log_info "Transparent Huge Pages: madvise (optimal) ✓"
+    elif echo "$current_setting" | grep -q '\[never\]'; then
+        log_info "Transparent Huge Pages: never (acceptable) ✓"
+    else
+        log_warning "Transparent Huge Pages: unknown setting - $current_setting"
+    fi
+}
+
 # Generate batch payload using Python (much faster than bash loops)
 generate_batch_payload() {
     local start_id=$1
@@ -219,6 +282,9 @@ main() {
 
     # Check dependencies
     check_dependencies
+
+    # Check and fix THP setting (critical for Arch Linux)
+    check_and_fix_thp
 
     # Step 1: Wait for server
     wait_for_health || exit 1
