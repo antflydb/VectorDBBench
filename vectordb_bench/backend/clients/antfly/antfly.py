@@ -47,20 +47,9 @@ class Antfly(VectorDB):
             # Wait for shard to initialize
             self._wait_for_shard_ready(client)
 
-            # 2. Add embeddings index with Termite embedder
-            index_def = {
-                "type": "embeddings",
-                "dimension": dim,
-                "field": "vec_data",
-                "template": "{{vec_data}}",
-                "embedder": {"provider": "termite", "model": "BAAI/bge-small-en-v1.5"},
-            }
+            # 2. Add field-only embeddings index (pre-computed vectors, no embedder needed)
+            index_def = {"type": "embeddings", "dimension": dim, "field": "vec_data"}
             r = client.post(f"/tables/{self.collection_name}/indexes/vec", json=index_def)
-            if r.status_code >= 400:
-                # Fallback: try without embedder (field-only index)
-                log.warning(f"Index creation with embedder failed ({r.status_code}), trying field-only")
-                index_def = {"type": "embeddings", "dimension": dim, "field": "vec_data"}
-                r = client.post(f"/tables/{self.collection_name}/indexes/vec", json=index_def)
             log.info(f"Add embeddings index response: {r.status_code}")
         finally:
             client.close()
