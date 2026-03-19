@@ -1,6 +1,6 @@
 from pydantic import BaseModel, SecretStr
 
-from ..api import DBCaseConfig, DBConfig
+from ..api import DBCaseConfig, DBConfig, MetricType
 
 
 class AntflyConfig(DBConfig):
@@ -21,6 +21,7 @@ class AntflyConfig(DBConfig):
 
 
 class AntflyIndexConfig(BaseModel, DBCaseConfig):
+    metric_type: MetricType | None = None
     num_shards: int = 1
 
     def index_param(self) -> dict:
