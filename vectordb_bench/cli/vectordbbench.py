@@ -1,4 +1,5 @@
 from ..backend.clients.alisql.cli import AliSQLHNSW
+from ..backend.clients.antfly.cli import AntflyAKNN
 from ..backend.clients.alloydb.cli import AlloyDBScaNN
 from ..backend.clients.aws_opensearch.cli import AWSOpenSearch
 from ..backend.clients.chroma.cli import Chroma
@@ -82,6 +83,7 @@ cli.add_command(LindormIVFPQ)
 cli.add_command(LindormHNSW)
 cli.add_command(LindormIVFBQ)
 cli.add_command(Pinecone)
+cli.add_command(AntflyAKNN)
 
 
 if __name__ == "__main__":
