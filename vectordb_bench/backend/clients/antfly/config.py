@@ -24,8 +24,15 @@ class AntflyIndexConfig(BaseModel, DBCaseConfig):
     metric_type: MetricType | None = None
     num_shards: int = 1
 
+    def parse_metric(self) -> str:
+        if self.metric_type == MetricType.COSINE:
+            return "cosine"
+        if self.metric_type in (MetricType.IP, MetricType.DP):
+            return "inner_product"
+        return "l2_squared"
+
     def index_param(self) -> dict:
-        return {}
+        return {"distance_metric": self.parse_metric()}
 
     def search_param(self) -> dict:
         return {}

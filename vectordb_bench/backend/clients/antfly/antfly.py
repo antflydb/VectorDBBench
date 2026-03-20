@@ -1,17 +1,23 @@
 import logging
+import math
 import time
 from contextlib import contextmanager
 from typing import Any
 
 import httpx
 
-from ..api import DBCaseConfig, VectorDB
+from ..api import DBCaseConfig, MetricType, VectorDB
 
 log = logging.getLogger(__name__)
 
 BATCH_CHUNK_SIZE = 500
 TABLE_READY_TIMEOUT = 30
 TABLE_READY_POLL_INTERVAL = 2
+INDEX_READY_TIMEOUT = 1800
+INDEX_READY_POLL_INTERVAL = 2
+INDEX_NAME = "vec"
+INDEX_TYPES = ("embeddings", "aknn_v0")
+SOURCE_FIELD = "vec_data"
 
 
 class Antfly(VectorDB):
@@ -48,9 +54,26 @@ class Antfly(VectorDB):
             self._wait_for_shard_ready(client)
 
             # 2. Add field-only embeddings index (pre-computed vectors, no embedder needed)
-            index_def = {"type": "embeddings", "dimension": dim, "field": "vec_data"}
-            r = client.post(f"/tables/{self.collection_name}/indexes/vec", json=index_def)
-            log.info(f"Add embeddings index response: {r.status_code}")
+            index_def = {
+                "name": INDEX_NAME,
+                "dimension": dim,
+                "field": SOURCE_FIELD,
+                **self.case_config.index_param(),
+            }
+            index_error = None
+            for index_type in INDEX_TYPES:
+                r = client.post(
+                    f"/tables/{self.collection_name}/indexes/{INDEX_NAME}",
+                    json={"type": index_type, **index_def},
+                )
+                log.info(f"Add embeddings index response ({index_type}): {r.status_code}")
+                if r.is_success:
+                    index_error = None
+                    break
+                index_error = r
+            if index_error is not None:
+                index_error.raise_for_status()
+            self._wait_for_index_ready(client, expected_total=0)
         finally:
             client.close()
 
@@ -61,13 +84,13 @@ class Antfly(VectorDB):
             try:
                 r = client.post(
                     f"/tables/{self.collection_name}/batch",
-                    json={"inserts": {"_healthcheck": {"_probe": True}}},
+                    json={"inserts": {"_healthcheck": {"_probe": True}}, "sync_level": "write"},
                 )
                 if r.status_code < 500:
                     # Delete the probe doc
                     client.post(
                         f"/tables/{self.collection_name}/batch",
-                        json={"deletes": ["_healthcheck"]},
+                        json={"deletes": ["_healthcheck"], "sync_level": "write"},
                     )
                     log.info("Shard is ready (accepts writes)")
                     return
@@ -75,6 +98,58 @@ class Antfly(VectorDB):
                 pass
             time.sleep(TABLE_READY_POLL_INTERVAL)
         log.warning(f"Shard readiness timeout after {TABLE_READY_TIMEOUT}s, proceeding anyway")
+
+    def _get_index_status(self, client: httpx.Client) -> dict | None:
+        r = client.get(f"/tables/{self.collection_name}/indexes/{INDEX_NAME}")
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json()
+
+    def _index_status_is_ready(
+        self,
+        payload: dict | None,
+        status: dict | None,
+        expected_total: int | None = None,
+    ) -> bool:
+        if payload is None:
+            return False
+        if status is None:
+            return expected_total == 0
+
+        rebuilding = bool(status.get("rebuilding"))
+        wal_backlog = int(status.get("wal_backlog", 0) or 0)
+        total_indexed = int(status.get("total_indexed", 0) or 0)
+        has_error = bool(status.get("error"))
+
+        if has_error or rebuilding or wal_backlog > 0:
+            return False
+        if expected_total is not None and total_indexed < expected_total:
+            return False
+        return True
+
+    def _wait_for_index_ready(self, client: httpx.Client, expected_total: int | None = None):
+        deadline = time.monotonic() + INDEX_READY_TIMEOUT
+        last_status = None
+
+        while time.monotonic() < deadline:
+            try:
+                payload = self._get_index_status(client)
+                status = payload.get("status") if payload else None
+                last_status = status
+                if self._index_status_is_ready(payload, status, expected_total):
+                    log.info(f"Embeddings index is ready: {status}")
+                    return
+            except Exception as e:
+                last_status = {"error": str(e)}
+            time.sleep(INDEX_READY_POLL_INTERVAL)
+
+        log.warning(
+            "Embeddings index readiness timeout after %ss, expected_total=%s, last_status=%s",
+            INDEX_READY_TIMEOUT,
+            expected_total,
+            last_status,
+        )
 
     @contextmanager
     def init(self):
@@ -85,11 +160,39 @@ class Antfly(VectorDB):
             self.client.close()
             self.client = None
 
+    def need_normalize_cosine(self) -> bool:
+        # TaskRunner already gates normalization on the dataset metric being COSINE.
+        # Returning True here avoids relying on mutable case_config state to decide
+        # whether Antfly should receive unit-normalized vectors.
+        return True
+
+    def _uses_cosine_distance(self) -> bool:
+        try:
+            return self.case_config.index_param().get("distance_metric") == "cosine"
+        except Exception:
+            return getattr(self.case_config, "metric_type", None) == MetricType.COSINE
+
+    @staticmethod
+    def _normalize_vector(vector: list[float]) -> list[float]:
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm == 0:
+            return vector
+        return [value / norm for value in vector]
+
     def ready_to_search(self) -> bool:
-        pass
+        if getattr(self, "client", None) is not None:
+            payload = self._get_index_status(self.client)
+            return self._index_status_is_ready(payload, payload.get("status") if payload else None)
+        with httpx.Client(base_url=self._base_url, timeout=120) as client:
+            payload = self._get_index_status(client)
+            return self._index_status_is_ready(payload, payload.get("status") if payload else None)
 
     def optimize(self, data_size: int | None = None):
-        pass
+        if getattr(self, "client", None) is not None:
+            self._wait_for_index_ready(self.client, expected_total=data_size)
+            return
+        with httpx.Client(base_url=self._base_url, timeout=120) as client:
+            self._wait_for_index_ready(client, expected_total=data_size)
 
     def insert_embeddings(
         self,
@@ -99,20 +202,36 @@ class Antfly(VectorDB):
     ) -> tuple[int, Exception]:
         try:
             total = len(embeddings)
+            use_cosine = self._uses_cosine_distance()
             for start in range(0, total, BATCH_CHUNK_SIZE):
                 end = min(start + BATCH_CHUNK_SIZE, total)
                 inserts = {}
                 for i in range(start, end):
                     key = f"key:{metadata[i]}"
+                    embedding = embeddings[i]
+                    if use_cosine:
+                        embedding = self._normalize_vector(embedding)
                     inserts[key] = {
                         "id": metadata[i],
                         "metadata": metadata[i],
-                        "_embeddings": {"vec": embeddings[i]},
+                        # Antfly derives a hashID for precomputed embeddings from the
+                        # configured source field. Give it a stable string value instead
+                        # of forcing the "missing field" path for every document.
+                        SOURCE_FIELD: str(metadata[i]),
+                        "_embeddings": {"vec": embedding},
                     }
-                r = self.client.post(
-                    f"/tables/{self.collection_name}/batch",
-                    json={"inserts": inserts},
-                )
+                payload = {"inserts": inserts, "sync_level": "aknn"}
+                r = self.client.post(f"/tables/{self.collection_name}/batch", json=payload)
+                if not r.is_success:
+                    log.warning(
+                        "Antfly aknn batch write failed (%s), falling back to sync_level=write: %s",
+                        r.status_code,
+                        r.text,
+                    )
+                    r = self.client.post(
+                        f"/tables/{self.collection_name}/batch",
+                        json={"inserts": inserts, "sync_level": "write"},
+                    )
                 r.raise_for_status()
             return total, None
         except Exception as e:
@@ -129,6 +248,8 @@ class Antfly(VectorDB):
     ) -> list[int]:
         # Workaround: omit semantic_search and indexes, send embeddings directly.
         # This bypasses generateQueryEmbeddings() and uses the direct vector path.
+        if self._uses_cosine_distance():
+            query = self._normalize_vector(query)
         body = {
             "embeddings": {"vec": query},
             "limit": k,
