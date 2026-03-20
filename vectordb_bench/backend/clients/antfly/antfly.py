@@ -94,8 +94,8 @@ class Antfly(VectorDB):
                     )
                     log.info("Shard is ready (accepts writes)")
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Shard readiness probe failed", exc_info=exc)
             time.sleep(TABLE_READY_POLL_INTERVAL)
         log.warning(f"Shard readiness timeout after {TABLE_READY_TIMEOUT}s, proceeding anyway")
 
@@ -124,9 +124,7 @@ class Antfly(VectorDB):
 
         if has_error or rebuilding or wal_backlog > 0:
             return False
-        if expected_total is not None and total_indexed < expected_total:
-            return False
-        return True
+        return expected_total is None or total_indexed >= expected_total
 
     def _wait_for_index_ready(self, client: httpx.Client, expected_total: int | None = None):
         deadline = time.monotonic() + INDEX_READY_TIMEOUT
@@ -200,8 +198,8 @@ class Antfly(VectorDB):
         metadata: list[int],
         **kwargs: Any,
     ) -> tuple[int, Exception]:
+        total = len(embeddings)
         try:
-            total = len(embeddings)
             use_cosine = self._uses_cosine_distance()
             for start in range(0, total, BATCH_CHUNK_SIZE):
                 end = min(start + BATCH_CHUNK_SIZE, total)
@@ -233,10 +231,10 @@ class Antfly(VectorDB):
                         json={"inserts": inserts, "sync_level": "write"},
                     )
                 r.raise_for_status()
-            return total, None
         except Exception as e:
             log.warning(f"Antfly insert error: {e}")
             return 0, e
+        return total, None
 
     def search_embedding(
         self,
