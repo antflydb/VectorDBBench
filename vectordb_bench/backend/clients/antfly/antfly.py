@@ -66,19 +66,22 @@ class Antfly(VectorDB):
                 "external": True,
                 **self.case_config.index_param(),
             }
-            if os.environ.get("ANTFLY_EXTERNAL_INCLUDE_FIELD") == "1":
-                index_def["field"] = SOURCE_FIELD
             index_error = None
+            # Try each index type, with and without field, to handle
+            # both old binaries (require field) and new source (reject field with external).
             for index_type in INDEX_TYPES:
-                r = client.post(
-                    f"/tables/{self.collection_name}/indexes/{INDEX_NAME}",
-                    json={"type": index_type, **index_def},
-                )
-                log.info(f"Add embeddings index response ({index_type}): {r.status_code}")
-                if r.is_success:
-                    index_error = None
+                for extra in ({}, {"field": SOURCE_FIELD}):
+                    r = client.post(
+                        f"/tables/{self.collection_name}/indexes/{INDEX_NAME}",
+                        json={"type": index_type, **index_def, **extra},
+                    )
+                    log.info(f"Add embeddings index response ({index_type}, field={'field' in extra}): {r.status_code}")
+                    if r.is_success:
+                        index_error = None
+                        break
+                    index_error = r
+                if index_error is None:
                     break
-                index_error = r
             if index_error is not None:
                 index_error.raise_for_status()
             self._wait_for_index_ready(client, expected_total=0)
