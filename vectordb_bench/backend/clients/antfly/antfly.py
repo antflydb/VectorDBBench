@@ -55,35 +55,45 @@ class Antfly(VectorDB):
                 r = client.delete(f"/tables/{self.collection_name}")
                 log.info(f"Drop table response: {r.status_code}")
 
-            r = client.post(f"/tables/{self.collection_name}", json={"num_shards": num_shards})
-            log.info(f"Create table response: {r.status_code}")
+            table = self._get_table_status_or_none(client)
+            if table is None:
+                r = client.post(f"/tables/{self.collection_name}", json={"num_shards": num_shards})
+                log.info(f"Create table response: {r.status_code}")
+                r.raise_for_status()
+            else:
+                log.info("Reusing existing table: %s", self.collection_name)
 
             self._wait_for_shard_ready(client)
 
-            index_def = {
-                "name": INDEX_NAME,
-                "dimension": dim,
-                "external": True,
-                **self.case_config.index_param(),
-            }
-            index_error = None
-            # Try each index type, with and without field, to handle
-            # both old binaries (require field) and new source (reject field with external).
-            for index_type in INDEX_TYPES:
-                for extra in ({}, {"field": SOURCE_FIELD}):
-                    r = client.post(
-                        f"/tables/{self.collection_name}/indexes/{INDEX_NAME}",
-                        json={"type": index_type, **index_def, **extra},
-                    )
-                    log.info(f"Add embeddings index response ({index_type}, field={'field' in extra}): {r.status_code}")
-                    if r.is_success:
-                        index_error = None
+            if self._get_index_status(client) is None:
+                index_def = {
+                    "name": INDEX_NAME,
+                    "dimension": dim,
+                    "external": True,
+                    **self.case_config.index_param(),
+                }
+                index_error = None
+                # Try each index type, with and without field, to handle
+                # both old binaries (require field) and new source (reject field with external).
+                for index_type in INDEX_TYPES:
+                    for extra in ({}, {"field": SOURCE_FIELD}):
+                        r = client.post(
+                            f"/tables/{self.collection_name}/indexes/{INDEX_NAME}",
+                            json={"type": index_type, **index_def, **extra},
+                        )
+                        log.info(
+                            f"Add embeddings index response ({index_type}, field={'field' in extra}): {r.status_code}"
+                        )
+                        if r.is_success:
+                            index_error = None
+                            break
+                        index_error = r
+                    if index_error is None:
                         break
-                    index_error = r
-                if index_error is None:
-                    break
-            if index_error is not None:
-                index_error.raise_for_status()
+                if index_error is not None:
+                    index_error.raise_for_status()
+            else:
+                log.info("Reusing existing embeddings index: %s", INDEX_NAME)
             self._wait_for_index_ready(client, expected_total=0)
             self._refresh_direct_search_routing(client)
         finally:
@@ -118,6 +128,13 @@ class Antfly(VectorDB):
 
     def _get_table_status(self, client: httpx.Client) -> dict:
         r = client.get(f"/tables/{self.collection_name}")
+        r.raise_for_status()
+        return r.json()
+
+    def _get_table_status_or_none(self, client: httpx.Client) -> dict | None:
+        r = client.get(f"/tables/{self.collection_name}")
+        if r.status_code == 404:
+            return None
         r.raise_for_status()
         return r.json()
 
