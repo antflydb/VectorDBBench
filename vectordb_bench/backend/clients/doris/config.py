@@ -1,6 +1,7 @@
 import logging
+from typing import Any
 
-from pydantic import BaseModel, SecretStr, validator
+from pydantic import BaseModel, SecretStr, model_validator
 
 from ..api import DBCaseConfig, DBConfig, MetricType
 
@@ -17,9 +18,10 @@ class DorisConfig(DBConfig):
     db_name: str = "test"
     ssl: bool = False
 
-    @validator("*")
-    def not_empty_field(cls, v: any, field: any):
-        return v
+    @model_validator(mode="before")
+    @classmethod
+    def not_empty_field(cls, data: Any) -> Any:
+        return data  # allow all fields including empty strings
 
     def to_dict(self) -> dict:
         pwd_str = self.password.get_secret_value()
