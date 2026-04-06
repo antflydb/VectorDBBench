@@ -4,7 +4,7 @@ from enum import StrEnum
 
 from typing import Any
 
-from pydantic import BaseModel, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
 from vectordb_bench.backend.filter import Filter, FilterOp
 
@@ -68,6 +68,8 @@ class DBConfig(ABC, BaseModel):
             MilvusConfig.db_label = 16c64g
             ZillizCloudConfig.db_label = 1cu-perf
     """
+
+    model_config = ConfigDict(validate_default=True)
 
     db_label: str = ""
     version: str = ""
