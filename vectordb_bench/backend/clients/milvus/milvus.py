@@ -174,14 +174,13 @@ class Milvus(VectorDB):
                 try:
                     self.col.compact()
                     self.col.wait_for_compaction_completed()
-                    log.info("compactation completed. waiting for the rest of index buliding.")
+                    log.info("compaction completed. waiting for the rest of index building.")
                 except Exception as e:
                     log.warning(f"{self.name} compact error: {e}")
-                    if hasattr(e, "code"):
-                        if e.code().name == "PERMISSION_DENIED":
-                            log.warning("Skip compact due to permission denied.")
+                    if hasattr(e, "code") and e.code().name == "PERMISSION_DENIED":
+                        log.warning("Skip compact due to permission denied.")
                     else:
-                        raise e from e
+                        raise e from None
                 wait_index()
         except Exception as e:
             log.warning(f"{self.name} optimize error: {e}")
