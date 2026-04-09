@@ -1,6 +1,7 @@
 PYTHON ?= /home/rowan/.local/share/uv/tools/pip/bin/python
 BENCH = $(PYTHON) -m vectordb_bench.cli.vectordbbench
 COMMON = --drop-old --skip-search-concurrent
+ANTFLY_NUM_PER_BATCH ?= 5000
 
 help:
 	@echo "VectorDBBench — Antfly Integration"
@@ -28,7 +29,7 @@ help:
 
 # --- 50K benchmarks ---
 bench-antfly-50k:
-	$(BENCH) antflyaknn --host localhost --port 8080 --num-shards 1 \
+	NUM_PER_BATCH=$(ANTFLY_NUM_PER_BATCH) $(BENCH) antflyaknn --host localhost --port 8080 --num-shards 1 \
 		--case-type Performance1536D50K $(COMMON) --db-label antfly-local
 
 bench-qdrant-50k:
@@ -44,7 +45,7 @@ bench-all-50k: bench-antfly-50k bench-qdrant-50k bench-milvus-50k
 
 # --- 1M benchmarks ---
 bench-antfly-1m:
-	$(BENCH) antflyaknn --host localhost --port 8080 --num-shards 1 \
+	NUM_PER_BATCH=$(ANTFLY_NUM_PER_BATCH) $(BENCH) antflyaknn --host localhost --port 8080 --num-shards 1 \
 		--case-type Performance768D1M $(COMMON) --db-label antfly-local
 
 bench-qdrant-1m:
