@@ -20,6 +20,12 @@ INDEX_TYPES = ("embeddings", "aknn_v0")
 SOURCE_FIELD = "vec_data"
 
 
+def _httpx_host(host: str) -> str:
+    # macOS resolves localhost to ::1 first. The current antfly-zig listener is
+    # IPv4-only, so keep the user-facing flag but route httpx to IPv4 loopback.
+    return "127.0.0.1" if host == "localhost" else host
+
+
 class Antfly(VectorDB):
     def __init__(
         self,
@@ -35,7 +41,7 @@ class Antfly(VectorDB):
         self.collection_name = collection_name
         self.dim = dim
 
-        base_url = f"http://{db_config['host']}:{db_config['port']}/api/v1"
+        base_url = f"http://{_httpx_host(db_config['host'])}:{db_config['port']}/api/v1"
         self._base_url = base_url
         num_shards = db_config.get("num_shards", 1)
 
@@ -57,7 +63,7 @@ class Antfly(VectorDB):
             index_def = {
                 "name": INDEX_NAME,
                 "dimension": dim,
-                "field": SOURCE_FIELD,
+                "external": True,
                 **self.case_config.index_param(),
             }
             index_error = None
