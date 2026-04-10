@@ -51,6 +51,7 @@ class MariaDBHNSWConfig(MariaDBIndexConfig, DBCaseConfig):
     index: IndexType = IndexType.HNSW
     storage_engine: str = "InnoDB"
     max_cache_size: int | None = None
+
     def index_param(self) -> dict:
         return {
             "storage_engine": self.storage_engine,

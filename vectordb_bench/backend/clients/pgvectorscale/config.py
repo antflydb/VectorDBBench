@@ -78,6 +78,7 @@ class PgVectorScaleStreamingDiskANNConfig(PgVectorScaleIndexConfig):
     num_bits_per_dimension: int | None = None
     query_search_list_size: int | None = None
     query_rescore: int | None = None
+
     def index_param(self) -> dict:
         return {
             "metric": self.parse_metric(),

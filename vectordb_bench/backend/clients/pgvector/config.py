@@ -49,6 +49,8 @@ class PgVectorIndexParam(TypedDict):
     index_creation_with_options: Sequence[dict[str, Any]]
     maintenance_work_mem: str | None = None
     max_parallel_workers: int | None = None
+
+
 class PgVectorSearchParam(TypedDict):
     metric_fun_op: LiteralString
 

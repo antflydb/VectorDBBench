@@ -150,9 +150,8 @@ class Antfly(VectorDB):
         table = self._get_table_status(client)
         shards = table.get("shards") or {}
         if len(shards) != 1:
-            raise ValueError(
-                f"Antfly direct store search currently requires exactly one shard; found {len(shards)} shards"
-            )
+            msg = f"Antfly direct store search currently requires exactly one shard; found {len(shards)} shards"
+            raise ValueError(msg)
         self._direct_shard_id = next(iter(shards))
 
     def _index_status_is_ready(

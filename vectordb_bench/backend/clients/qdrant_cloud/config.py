@@ -1,6 +1,4 @@
-from typing import TypeVar
-
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, SecretStr, model_validator
 
@@ -36,7 +34,8 @@ class QdrantConfig(DBConfig):
                 if name in skip:
                     continue
                 if isinstance(v, str) and len(v) == 0:
-                    raise ValueError(f"Empty string for field '{name}'!")
+                    msg = f"Empty string for field '{name}'!"
+                    raise ValueError(msg)
         return data
 
 

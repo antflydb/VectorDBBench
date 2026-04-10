@@ -1,6 +1,5 @@
 import logging
 from enum import Enum
-
 from typing import Any
 
 from pydantic import BaseModel, SecretStr, field_validator, model_validator
@@ -43,7 +42,8 @@ class OSSOpenSearchConfig(DBConfig, BaseModel):
                 if name in skip:
                     continue
                 if isinstance(v, str) and len(v) == 0:
-                    raise ValueError(f"Empty string for field '{name}'!")
+                    msg = f"Empty string for field '{name}'!"
+                    raise ValueError(msg)
         return data
 
 

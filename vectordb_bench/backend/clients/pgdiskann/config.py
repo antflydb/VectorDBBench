@@ -45,6 +45,7 @@ class PgDiskANNIndexConfig(BaseModel, DBCaseConfig):
     create_index_after_load: bool = True
     maintenance_work_mem: str | None = None
     max_parallel_workers: int | None = None
+
     def parse_metric(self) -> str:
         if self.metric_type == MetricType.L2:
             return "vector_l2_ops"

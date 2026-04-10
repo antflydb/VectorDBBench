@@ -30,7 +30,8 @@ class MilvusConfig(DBConfig):
                 if name in skip:
                     continue
                 if isinstance(v, str) and len(v) == 0:
-                    raise ValueError(f"Empty string for field '{name}'!")
+                    msg = f"Empty string for field '{name}'!"
+                    raise ValueError(msg)
         return data
 
 

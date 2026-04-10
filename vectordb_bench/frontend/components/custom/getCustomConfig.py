@@ -69,7 +69,9 @@ def save_all_custom_configs(
     performance_configs: list[CustomCaseConfig], streaming_configs: list[CustomStreamingCaseConfig]
 ):
     """Save both performance and streaming configs to the same JSON file"""
-    all_configs = [config.model_dump() for config in performance_configs] + [config.model_dump() for config in streaming_configs]
+    all_configs = [config.model_dump() for config in performance_configs] + [
+        config.model_dump() for config in streaming_configs
+    ]
     with open(config.CUSTOM_CONFIG_DIR, "w") as f:
         json.dump(all_configs, f, indent=4)
 

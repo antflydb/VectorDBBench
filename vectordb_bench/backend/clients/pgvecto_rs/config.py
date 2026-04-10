@@ -108,6 +108,7 @@ class PgVectoRSIVFFlatConfig(PgVectoRSIndexConfig):
     index: IndexType = IndexType.IVFFlat
     probes: int | None = None
     lists: int | None = None
+
     def index_param(self) -> dict[str, str]:
         if self.quantization_type is None:
             quantization = None

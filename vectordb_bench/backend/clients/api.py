@@ -1,10 +1,9 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from enum import StrEnum
-
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from vectordb_bench.backend.filter import Filter, FilterOp
 
@@ -102,7 +101,8 @@ class DBConfig(ABC, BaseModel):
                 if name in skip:
                     continue
                 if isinstance(v, str) and len(v) == 0:
-                    raise ValueError(f"Empty string for field '{name}'!")
+                    msg = f"Empty string for field '{name}'!"
+                    raise ValueError(msg)
         return data
 
 
