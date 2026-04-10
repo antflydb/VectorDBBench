@@ -2,7 +2,9 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from enum import StrEnum
 
-from pydantic import BaseModel, SecretStr, validator
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
 from vectordb_bench.backend.filter import Filter, FilterOp
 
@@ -67,6 +69,8 @@ class DBConfig(ABC, BaseModel):
             ZillizCloudConfig.db_label = 1cu-perf
     """
 
+    model_config = ConfigDict(validate_default=True)
+
     db_label: str = ""
     version: str = ""
     note: str = ""
@@ -89,13 +93,17 @@ class DBConfig(ABC, BaseModel):
     def to_dict(self) -> dict:
         raise NotImplementedError
 
-    @validator("*")
-    def not_empty_field(cls, v: any, field: any):
-        if field.name in cls.common_short_configs() or field.name in cls.common_long_configs():
-            return v
-        if not v and isinstance(v, str | SecretStr):
-            raise ValueError("Empty string!")
-        return v
+    @model_validator(mode="before")
+    @classmethod
+    def not_empty_field(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            skip = set(cls.common_short_configs()) | set(cls.common_long_configs())
+            for name, v in data.items():
+                if name in skip:
+                    continue
+                if isinstance(v, str) and len(v) == 0:
+                    raise ValueError(f"Empty string for field '{name}'!")
+        return data
 
 
 class DBCaseConfig(ABC):

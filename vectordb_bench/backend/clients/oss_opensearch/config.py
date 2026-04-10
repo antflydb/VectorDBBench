@@ -1,7 +1,9 @@
 import logging
 from enum import Enum
 
-from pydantic import BaseModel, SecretStr, root_validator, validator
+from typing import Any
+
+from pydantic import BaseModel, SecretStr, field_validator, model_validator
 
 from ..api import DBCaseConfig, DBConfig, MetricType
 
@@ -32,17 +34,17 @@ class OSSOpenSearchConfig(DBConfig, BaseModel):
             "timeout": 600,
         }
 
-    @validator("*")
-    def not_empty_field(cls, v: any, field: any):
-        if (
-            field.name in cls.common_short_configs()
-            or field.name in cls.common_long_configs()
-            or field.name in ["user", "password", "host"]
-        ):
-            return v
-        if isinstance(v, str | SecretStr) and len(v) == 0:
-            raise ValueError("Empty string!")
-        return v
+    @model_validator(mode="before")
+    @classmethod
+    def not_empty_field(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            skip = set(cls.common_short_configs()) | set(cls.common_long_configs()) | {"user", "password", "host"}
+            for name, v in data.items():
+                if name in skip:
+                    continue
+                if isinstance(v, str) and len(v) == 0:
+                    raise ValueError(f"Empty string for field '{name}'!")
+        return data
 
 
 class OSSOS_Engine(Enum):
@@ -111,8 +113,9 @@ class OSSOpenSearchIndexConfig(BaseModel, DBCaseConfig):
     compression_level: str = CompressionLevel.LEVEL_32X
     oversample_factor: float = 1.0
 
-    @validator("quantization_type", pre=True, always=True)
-    def validate_quantization_type(cls, value: any):
+    @field_validator("quantization_type", mode="before")
+    @classmethod
+    def validate_quantization_type(cls, value: Any) -> OSSOpenSearchQuantization:
         """Convert string values to enum"""
         if not value:
             return OSSOpenSearchQuantization.NONE
@@ -128,19 +131,20 @@ class OSSOpenSearchIndexConfig(BaseModel, DBCaseConfig):
 
         return mapping.get(value, OSSOpenSearchQuantization.NONE)
 
-    @root_validator
-    def validate_engine_name(cls, values: dict):
+    @model_validator(mode="before")
+    @classmethod
+    def validate_engine_name(cls, data: Any) -> Any:
         """Map engine_name string from UI to engine enum"""
-        if values.get("engine_name"):
-            engine_name = values["engine_name"].lower()
+        if isinstance(data, dict) and data.get("engine_name"):
+            engine_name = data["engine_name"].lower()
             if engine_name == "faiss":
-                values["engine"] = OSSOS_Engine.faiss
+                data["engine"] = OSSOS_Engine.faiss
             elif engine_name == "lucene":
-                values["engine"] = OSSOS_Engine.lucene
+                data["engine"] = OSSOS_Engine.lucene
             else:
                 log.warning(f"Unknown engine_name: {engine_name}, defaulting to faiss")
-                values["engine"] = OSSOS_Engine.faiss
-        return values
+                data["engine"] = OSSOS_Engine.faiss
+        return data
 
     def __eq__(self, obj: any):
         return (

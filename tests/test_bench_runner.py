@@ -52,7 +52,7 @@ class TestBenchRunner:
         )
 
         t = task_config.copy()
-        d = t.json(exclude={'db_config': {'password', 'api_key'}})
+        d = t.model_dump_json(exclude={'db_config': {'password', 'api_key'}})
         log.info(f"{d}")
 
         import ujson

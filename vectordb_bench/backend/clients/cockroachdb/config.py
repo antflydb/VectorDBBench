@@ -75,18 +75,14 @@ class CockroachDBIndexParam(TypedDict):
 
     metric: str
     index_creation_with_options: Sequence[dict[str, Any]]
-    min_partition_size: int | None
-    max_partition_size: int | None
-    build_beam_size: int | None
-
-
+    min_partition_size: int | None = None
+    max_partition_size: int | None = None
+    build_beam_size: int | None = None
 class CockroachDBSearchParam(TypedDict):
     """Search parameters for CockroachDB vector queries."""
 
     metric_fun_op: LiteralString
-    vector_search_beam_size: int | None
-
-
+    vector_search_beam_size: int | None = None
 class CockroachDBSessionCommands(TypedDict):
     """Session-level commands for CockroachDB."""
 

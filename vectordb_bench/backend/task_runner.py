@@ -73,7 +73,7 @@ class CaseRunner(BaseModel):
         )
 
     def display(self) -> dict:
-        c_dict = self.ca.dict(
+        c_dict = self.ca.model_dump(
             include={
                 "label": True,
                 "name": True,
