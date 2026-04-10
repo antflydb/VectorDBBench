@@ -6,7 +6,7 @@ from ..api import DBCaseConfig, DBConfig, MetricType
 
 class ChromaConfig(DBConfig):
     user: str | None = None
-    password: SecretStr | None
+    password: SecretStr | None = None
     host: SecretStr = "localhost"
     port: int = 8000
 
@@ -26,7 +26,7 @@ class ChromaConfig(DBConfig):
 
 
 class ChromaIndexConfig(ChromaConfig, DBCaseConfig):
-    metric_type: MetricType = "cosine"
+    metric_type: MetricType = MetricType.COSINE
     m: int = 16
     ef_construct: int = 100
     ef_search: int | None = 100

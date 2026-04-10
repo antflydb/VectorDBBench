@@ -1,6 +1,6 @@
-from typing import TypedDict
+from typing import Any, TypedDict
 
-from pydantic import BaseModel, SecretStr, validator
+from pydantic import BaseModel, SecretStr, model_validator
 
 from ..api import DBCaseConfig, DBConfig, MetricType
 
@@ -35,13 +35,18 @@ class TiDBConfig(DBConfig):
             "ssl_verify_identity": self.ssl,
         }
 
-    @validator("*")
-    def not_empty_field(cls, v: any, field: any):
-        if field.name in ["password", "db_label"]:
-            return v
-        if isinstance(v, str | SecretStr) and len(v) == 0:
-            raise ValueError("Empty string!")
-        return v
+    @model_validator(mode="before")
+    @classmethod
+    def not_empty_field(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            skip = {"password", "db_label"}
+            for name, v in data.items():
+                if name in skip:
+                    continue
+                if isinstance(v, str) and len(v) == 0:
+                    msg = f"Empty string for field '{name}'!"
+                    raise ValueError(msg)
+        return data
 
 
 class TiDBIndexConfig(BaseModel, DBCaseConfig):
