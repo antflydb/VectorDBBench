@@ -248,7 +248,6 @@ class Antfly(VectorDB):
         return {
             "embeddings": {"vec": self._serialize_query_vector(query)},
             "limit": k,
-            "fields": ["id"],
             **self.case_config.search_param(),
         }
 
@@ -270,14 +269,11 @@ class Antfly(VectorDB):
         hits = hits_obj.get("hits") or []
         results = []
         for hit in hits:
-            if "id" in hit:
-                results.append(int(hit["id"]))
-            else:
-                doc_key = hit.get("_id", "")
-                try:
-                    results.append(int(doc_key.split(":", 1)[1]))
-                except (IndexError, ValueError):
-                    log.warning(f"Could not parse id from _id: {doc_key}")
+            doc_key = hit.get("_id", "")
+            try:
+                results.append(int(doc_key.split(":", 1)[1]))
+            except (IndexError, ValueError):
+                log.warning(f"Could not parse id from _id: {doc_key}")
         return results
 
     def _parse_store_hits(self, data: dict) -> list[int]:
@@ -364,7 +360,6 @@ class Antfly(VectorDB):
             )
             r.raise_for_status()
             return self._parse_store_hits(r.json())
-
         r = self.client.post(
             f"/tables/{self.collection_name}/query",
             json=self._metadata_query_body(query, k),
