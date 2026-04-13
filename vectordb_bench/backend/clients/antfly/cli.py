@@ -47,9 +47,13 @@ class AntflyTypedDict(TypedDict):
         ),
     ]
     search_effort: Annotated[
-        float,
+        float | None,
         click.option(
-            "--search-effort", type=float, help="Search effort 0.0-1.0 (higher=better recall, slower)", default=None
+            "--search-effort",
+            type=float,
+            help="Search effort 0.0-1.0 (higher=better recall, slower)",
+            default=None,
+            show_default=True,
         ),
     ]
 

@@ -29,6 +29,19 @@ def _httpx_host(host: str) -> str:
     return "127.0.0.1" if host == "localhost" else host
 
 
+def _pack_dense_f32(values: list[float]) -> str:
+    return base64.b64encode(struct.pack(f"<{len(values)}f", *values)).decode("ascii")
+
+
+def _make_client(base_url: str, timeout: float) -> httpx.Client:
+    return httpx.Client(
+        base_url=base_url,
+        timeout=timeout,
+        headers={"Connection": "close"},
+        limits=httpx.Limits(max_keepalive_connections=0, max_connections=1),
+    )
+
+
 class Antfly(VectorDB):
     def __init__(
         self,
@@ -44,7 +57,9 @@ class Antfly(VectorDB):
         self.collection_name = collection_name
         self.dim = dim
 
-        self._metadata_base_url = f"http://{_httpx_host(db_config['host'])}:{db_config['port']}/api/v1"
+        self._metadata_base_url = (
+            f"http://{_httpx_host(db_config['host'])}:{db_config['port']}/api/v1"
+        )
         self._store_host = _httpx_host(db_config.get("store_host") or db_config["host"])
         self._store_port = db_config.get("store_port")
         self._use_direct_store_search = bool(db_config.get("use_direct_store_search"))
@@ -53,9 +68,11 @@ class Antfly(VectorDB):
         num_shards = db_config.get("num_shards", 1)
 
         if self._use_direct_store_search and not self._store_port:
-            raise ValueError("Antfly direct store search requires store_port to be configured")
+            raise ValueError(
+                "Antfly direct store search requires store_port to be configured"
+            )
 
-        client = httpx.Client(base_url=self._metadata_base_url, timeout=60)
+        client = _make_client(self._metadata_base_url, 60)
         try:
             if drop_old:
                 r = client.delete(f"/tables/{self.collection_name}")
@@ -63,7 +80,9 @@ class Antfly(VectorDB):
 
             table = self._get_table_status_or_none(client)
             if table is None:
-                r = client.post(f"/tables/{self.collection_name}", json={"num_shards": num_shards})
+                r = client.post(
+                    f"/tables/{self.collection_name}", json={"num_shards": num_shards}
+                )
                 log.info(f"Create table response: {r.status_code}")
                 r.raise_for_status()
             else:
@@ -111,7 +130,10 @@ class Antfly(VectorDB):
             try:
                 r = client.post(
                     f"/tables/{self.collection_name}/batch",
-                    json={"inserts": {"_healthcheck": {"_probe": True}}, "sync_level": "write"},
+                    json={
+                        "inserts": {"_healthcheck": {"_probe": True}},
+                        "sync_level": "write",
+                    },
                 )
                 if r.status_code < 500:
                     client.post(
@@ -123,7 +145,9 @@ class Antfly(VectorDB):
             except Exception as exc:
                 log.debug("Shard readiness probe failed", exc_info=exc)
             time.sleep(TABLE_READY_POLL_INTERVAL)
-        log.warning(f"Shard readiness timeout after {TABLE_READY_TIMEOUT}s, proceeding anyway")
+        log.warning(
+            f"Shard readiness timeout after {TABLE_READY_TIMEOUT}s, proceeding anyway"
+        )
 
     def _get_index_status(self, client: httpx.Client) -> dict | None:
         r = client.get(f"/tables/{self.collection_name}/indexes/{INDEX_NAME}")
@@ -174,7 +198,9 @@ class Antfly(VectorDB):
             return False
         return expected_total is None or total_indexed >= expected_total
 
-    def _wait_for_index_ready(self, client: httpx.Client, expected_total: int | None = None):
+    def _wait_for_index_ready(
+        self, client: httpx.Client, expected_total: int | None = None
+    ):
         deadline = time.monotonic() + INDEX_READY_TIMEOUT
         last_status = None
 
@@ -199,11 +225,11 @@ class Antfly(VectorDB):
 
     @contextmanager
     def init(self):
-        self.client = httpx.Client(base_url=self._metadata_base_url, timeout=120)
+        self.client = _make_client(self._metadata_base_url, 120)
         self.store_client = None
         try:
             if self._use_direct_store_search:
-                self.store_client = httpx.Client(base_url=self._store_base_url, timeout=120)
+                self.store_client = _make_client(self._store_base_url, 120)
             yield
         finally:
             self.client.close()
@@ -215,7 +241,9 @@ class Antfly(VectorDB):
     @property
     def _store_base_url(self) -> str:
         if self._store_port is None:
-            raise ValueError("Antfly store_base_url requested without store_port configured")
+            raise ValueError(
+                "Antfly store_base_url requested without store_port configured"
+            )
         return f"http://{self._store_host}:{self._store_port}"
 
     def need_normalize_cosine(self) -> bool:
@@ -295,16 +323,20 @@ class Antfly(VectorDB):
     def ready_to_search(self) -> bool:
         if getattr(self, "client", None) is not None:
             payload = self._get_index_status(self.client)
-            return self._index_status_is_ready(payload, payload.get("status") if payload else None)
-        with httpx.Client(base_url=self._metadata_base_url, timeout=120) as client:
+            return self._index_status_is_ready(
+                payload, payload.get("status") if payload else None
+            )
+        with _make_client(self._metadata_base_url, 120) as client:
             payload = self._get_index_status(client)
-            return self._index_status_is_ready(payload, payload.get("status") if payload else None)
+            return self._index_status_is_ready(
+                payload, payload.get("status") if payload else None
+            )
 
     def optimize(self, data_size: int | None = None):
         if getattr(self, "client", None) is not None:
             self._wait_for_index_ready(self.client, expected_total=data_size)
             return
-        with httpx.Client(base_url=self._metadata_base_url, timeout=120) as client:
+        with _make_client(self._metadata_base_url, 120) as client:
             self._wait_for_index_ready(client, expected_total=data_size)
 
     def insert_embeddings(
@@ -332,7 +364,9 @@ class Antfly(VectorDB):
                         "_embeddings": {"vec": serialized_embedding},
                     }
                 payload = {"inserts": inserts, "sync_level": "write"}
-                r = self.client.post(f"/tables/{self.collection_name}/batch", json=payload)
+                r = self.client.post(
+                    f"/tables/{self.collection_name}/batch", json=payload
+                )
                 r.raise_for_status()
         except Exception as e:
             log.warning(f"Antfly insert error: {e}")
