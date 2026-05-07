@@ -37,8 +37,7 @@ def _make_client(base_url: str, timeout: float) -> httpx.Client:
     return httpx.Client(
         base_url=base_url,
         timeout=timeout,
-        headers={"Connection": "close"},
-        limits=httpx.Limits(max_keepalive_connections=0, max_connections=1),
+        limits=httpx.Limits(max_keepalive_connections=8, max_connections=8),
     )
 
 
@@ -272,6 +271,9 @@ class Antfly(VectorDB):
             return self._pack_vector(vector)
         return vector
 
+    def _serialize_insert_vector(self, vector: list[float]) -> str:
+        return self._pack_vector(vector)
+
     def _metadata_query_body(self, query: list[float], k: int) -> dict[str, Any]:
         return {
             "embeddings": {"vec": self._serialize_query_vector(query)},
@@ -356,7 +358,7 @@ class Antfly(VectorDB):
                     embedding = embeddings[i]
                     if use_cosine:
                         embedding = self._normalize_vector(embedding)
-                    serialized_embedding = self._serialize_query_vector(embedding)
+                    serialized_embedding = self._serialize_insert_vector(embedding)
                     inserts[key] = {
                         "id": metadata[i],
                         "metadata": metadata[i],

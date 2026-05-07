@@ -12,7 +12,7 @@ class AntflyConfig(DBConfig):
     password: SecretStr | None = None
     num_shards: int = 1
     use_direct_store_search: bool = False
-    pack_query_vectors: bool = False
+    pack_query_vectors: bool = True
 
     def to_dict(self) -> dict:
         return {

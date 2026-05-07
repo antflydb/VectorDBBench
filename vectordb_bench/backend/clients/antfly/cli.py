@@ -41,8 +41,8 @@ class AntflyTypedDict(TypedDict):
         bool,
         click.option(
             "--pack-query-vectors/--no-pack-query-vectors",
-            help="Send query vectors in Antfly's packed base64 float32 wire format",
-            default=False,
+            help="Send dense vectors in Antfly's packed base64 float32 wire format for inserts and queries",
+            default=True,
             show_default=True,
         ),
     ]
