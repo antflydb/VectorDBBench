@@ -191,7 +191,11 @@ class Antfly(VectorDB):
         rebuilding = bool(status.get("rebuilding"))
         wal_backlog = int(status.get("wal_backlog", 0) or 0)
         total_indexed = int(status.get("total_indexed", 0) or 0)
+        doc_count = int(status.get("doc_count", 0) or 0)
         has_error = bool(status.get("error"))
+
+        if expected_total == 0 and total_indexed == 0 and doc_count == 0:
+            return not has_error and wal_backlog == 0
 
         if has_error or rebuilding or wal_backlog > 0:
             return False
