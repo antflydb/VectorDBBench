@@ -41,6 +41,18 @@ def _make_client(base_url: str, timeout: float) -> httpx.Client:
     )
 
 
+def _detect_metadata_base_url(host: str, port: int) -> str:
+    root = f"http://{_httpx_host(host)}:{port}"
+    try:
+        with httpx.Client(base_url=root, timeout=5) as client:
+            r = client.get("/readyz")
+            if r.is_success:
+                return root
+    except Exception:
+        pass
+    return f"{root}/api/v1"
+
+
 class Antfly(VectorDB):
     def __init__(
         self,
@@ -56,13 +68,14 @@ class Antfly(VectorDB):
         self.collection_name = collection_name
         self.dim = dim
 
-        self._metadata_base_url = (
-            f"http://{_httpx_host(db_config['host'])}:{db_config['port']}/api/v1"
+        self._metadata_base_url = _detect_metadata_base_url(
+            db_config["host"], db_config["port"]
         )
         self._store_host = _httpx_host(db_config.get("store_host") or db_config["host"])
         self._store_port = db_config.get("store_port")
         self._use_direct_store_search = bool(db_config.get("use_direct_store_search"))
         self._pack_query_vectors = bool(db_config.get("pack_query_vectors"))
+        self._legacy_wire = not self._pack_query_vectors
         self._direct_shard_id: str | None = None
         num_shards = db_config.get("num_shards", 1)
 
@@ -77,16 +90,24 @@ class Antfly(VectorDB):
                 r = client.delete(f"/tables/{self.collection_name}")
                 log.info(f"Drop table response: {r.status_code}")
 
-            table = self._get_table_status_or_none(client)
-            if table is None:
+            def create_table_if_needed() -> None:
+                table = self._get_table_status_or_none(client)
+                if table is not None:
+                    log.info("Reusing existing table: %s", self.collection_name)
+                    return
                 r = client.post(
                     f"/tables/{self.collection_name}", json={"num_shards": num_shards}
                 )
                 log.info(f"Create table response: {r.status_code}")
                 r.raise_for_status()
-            else:
-                log.info("Reusing existing table: %s", self.collection_name)
 
+            def reset_table() -> None:
+                r = client.delete(f"/tables/{self.collection_name}")
+                log.info(f"Reset table response: {r.status_code}")
+                create_table_if_needed()
+                self._wait_for_shard_ready(client)
+
+            create_table_if_needed()
             self._wait_for_shard_ready(client)
 
             if self._get_index_status(client) is None:
@@ -97,28 +118,48 @@ class Antfly(VectorDB):
                     **self.case_config.index_param(),
                 }
                 index_error = None
-                # Try each index type, with and without field, to handle
-                # both old binaries (require field) and new source (reject field with external).
-                for index_type in INDEX_TYPES:
-                    for extra in ({}, {"field": SOURCE_FIELD}):
-                        r = client.post(
-                            f"/tables/{self.collection_name}/indexes/{INDEX_NAME}",
-                            json={"type": index_type, **index_def, **extra},
-                        )
-                        log.info(
-                            f"Add embeddings index response ({index_type}, field={'field' in extra}): {r.status_code}"
-                        )
-                        if r.is_success:
-                            index_error = None
-                            break
+                index_created = False
+                extras = ({"field": SOURCE_FIELD}, {}) if self._legacy_wire else ({}, {"field": SOURCE_FIELD})
+                candidates = [
+                    (index_type, extra)
+                    for index_type in INDEX_TYPES
+                    for extra in extras
+                ]
+                # Treat a create-index HTTP success as provisional. Older stable
+                # binaries can accept a metadata change that the shard later
+                # rejects, so require a ready status before loading vectors.
+                for idx, (index_type, extra) in enumerate(candidates):
+                    if idx > 0:
+                        reset_table()
+                    r = client.post(
+                        f"/tables/{self.collection_name}/indexes/{INDEX_NAME}",
+                        json={"type": index_type, **index_def, **extra},
+                    )
+                    log.info(
+                        f"Add embeddings index response ({index_type}, field={'field' in extra}): {r.status_code}"
+                    )
+                    if not r.is_success:
                         index_error = r
-                    if index_error is None:
+                        continue
+                    if self._legacy_wire:
+                        index_created = True
                         break
-                if index_error is not None:
+                    if self._wait_for_index_ready(
+                        client,
+                        expected_total=0,
+                        timeout=TABLE_READY_TIMEOUT,
+                    ):
+                        index_created = True
+                        break
+                    index_error = r
+                if not index_created and index_error is not None:
                     index_error.raise_for_status()
+                if not index_created:
+                    raise RuntimeError("Antfly index was created but never became ready")
             else:
                 log.info("Reusing existing embeddings index: %s", INDEX_NAME)
-            self._wait_for_index_ready(client, expected_total=0)
+            if not self._legacy_wire:
+                self._wait_for_index_ready(client, expected_total=0)
             self._refresh_direct_search_routing(client)
         finally:
             client.close()
@@ -153,6 +194,9 @@ class Antfly(VectorDB):
         if r.status_code == 404:
             return None
         r.raise_for_status()
+        body = r.content.strip()
+        if not body or not body.startswith(b"{"):
+            return None
         return r.json()
 
     def _get_table_status(self, client: httpx.Client) -> dict:
@@ -165,6 +209,9 @@ class Antfly(VectorDB):
         if r.status_code == 404:
             return None
         r.raise_for_status()
+        body = r.content.strip()
+        if not body or not body.startswith(b"{"):
+            return None
         return r.json()
 
     def _refresh_direct_search_routing(self, client: httpx.Client):
@@ -186,7 +233,7 @@ class Antfly(VectorDB):
         if payload is None:
             return False
         if status is None:
-            return expected_total == 0
+            return False
 
         rebuilding = bool(status.get("rebuilding"))
         wal_backlog = int(status.get("wal_backlog", 0) or 0)
@@ -202,9 +249,12 @@ class Antfly(VectorDB):
         return expected_total is None or total_indexed >= expected_total
 
     def _wait_for_index_ready(
-        self, client: httpx.Client, expected_total: int | None = None
-    ):
-        deadline = time.monotonic() + INDEX_READY_TIMEOUT
+        self,
+        client: httpx.Client,
+        expected_total: int | None = None,
+        timeout: int = INDEX_READY_TIMEOUT,
+    ) -> bool:
+        deadline = time.monotonic() + timeout
         last_status = None
 
         while time.monotonic() < deadline:
@@ -214,17 +264,18 @@ class Antfly(VectorDB):
                 last_status = status
                 if self._index_status_is_ready(payload, status, expected_total):
                     log.info(f"Embeddings index is ready: {status}")
-                    return
+                    return True
             except Exception as e:
                 last_status = {"error": str(e)}
             time.sleep(INDEX_READY_POLL_INTERVAL)
 
         log.warning(
             "Embeddings index readiness timeout after %ss, expected_total=%s, last_status=%s",
-            INDEX_READY_TIMEOUT,
+            timeout,
             expected_total,
             last_status,
         )
+        return False
 
     @contextmanager
     def init(self):
@@ -275,8 +326,10 @@ class Antfly(VectorDB):
             return self._pack_vector(vector)
         return vector
 
-    def _serialize_insert_vector(self, vector: list[float]) -> str:
-        return self._pack_vector(vector)
+    def _serialize_insert_vector(self, vector: list[float]) -> list[float] | str:
+        if self._pack_query_vectors or os.environ.get("ANTFLY_PACK_VECTORS") == "1":
+            return self._pack_vector(vector)
+        return vector
 
     def _metadata_query_body(self, query: list[float], k: int) -> dict[str, Any]:
         return {
