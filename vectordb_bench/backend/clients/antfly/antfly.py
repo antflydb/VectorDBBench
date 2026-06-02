@@ -41,16 +41,34 @@ def _make_client(base_url: str, timeout: float) -> httpx.Client:
     )
 
 
+def _looks_like_json_response(response: httpx.Response) -> bool:
+    content_type = response.headers.get("content-type", "")
+    body = response.content.strip()
+    return (
+        response.is_success
+        and ("json" in content_type or body.startswith((b"{", b"[")))
+    )
+
+
 def _detect_metadata_base_url(host: str, port: int) -> str:
     root = f"http://{_httpx_host(host)}:{port}"
+    candidates = (f"{root}/db/v1", f"{root}/api/v1")
+    for base_url in candidates:
+        try:
+            with httpx.Client(base_url=base_url, timeout=5) as client:
+                r = client.get("/status")
+                if _looks_like_json_response(r):
+                    return base_url
+        except Exception:
+            pass
     try:
         with httpx.Client(base_url=root, timeout=5) as client:
-            r = client.get("/readyz")
-            if r.is_success:
-                return root
+            r = client.get("/api/v1/tables")
+            if _looks_like_json_response(r):
+                return f"{root}/api/v1"
     except Exception:
         pass
-    return f"{root}/api/v1"
+    return candidates[0]
 
 
 class Antfly(VectorDB):
@@ -192,27 +210,59 @@ class Antfly(VectorDB):
     def _get_index_status(self, client: httpx.Client) -> dict | None:
         r = client.get(f"/tables/{self.collection_name}/indexes/{INDEX_NAME}")
         if r.status_code == 404:
-            return None
+            return self._get_legacy_index_status(client)
         r.raise_for_status()
         body = r.content.strip()
         if not body or not body.startswith(b"{"):
-            return None
+            return self._get_legacy_index_status(client)
         return r.json()
 
     def _get_table_status(self, client: httpx.Client) -> dict:
-        r = client.get(f"/tables/{self.collection_name}")
-        r.raise_for_status()
-        return r.json()
+        table = self._get_table_status_or_none(client)
+        if table is None:
+            raise RuntimeError(f"Antfly table not found: {self.collection_name}")
+        return table
 
     def _get_table_status_or_none(self, client: httpx.Client) -> dict | None:
         r = client.get(f"/tables/{self.collection_name}")
+        if r.status_code == 404:
+            return self._get_legacy_table_status(client)
+        r.raise_for_status()
+        body = r.content.strip()
+        if not body or not body.startswith(b"{"):
+            return self._get_legacy_table_status(client)
+        return r.json()
+
+    def _get_legacy_table_status(self, client: httpx.Client) -> dict | None:
+        r = client.get("/tables")
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        body = r.content.strip()
+        if not body or not body.startswith(b"["):
+            return None
+        for table in r.json():
+            if isinstance(table, dict) and table.get("name") == self.collection_name:
+                return table
+        return None
+
+    def _get_legacy_index_status(self, client: httpx.Client) -> dict | None:
+        r = client.get("/status")
         if r.status_code == 404:
             return None
         r.raise_for_status()
         body = r.content.strip()
         if not body or not body.startswith(b"{"):
             return None
-        return r.json()
+        statuses = (((r.json().get("shards") or {}).get("statuses")) or {})
+        for shard in statuses.values():
+            if not isinstance(shard, dict) or shard.get("table") != self.collection_name:
+                continue
+            indexes = ((((shard.get("info") or {}).get("shard_stats") or {}).get("indexes")) or {})
+            status = indexes.get(INDEX_NAME)
+            if isinstance(status, dict):
+                return {"status": status}
+        return None
 
     def _refresh_direct_search_routing(self, client: httpx.Client):
         if not self._use_direct_store_search:
