@@ -150,10 +150,24 @@ class SerialInsertRunner:
     @utils.time_it
     def _insert_all_batches(self) -> int:
         """Performance case only"""
-        with concurrent.futures.ProcessPoolExecutor(
+        def stop_worker_processes():
+            processes = list((executor._processes or {}).keys())
+            executor.shutdown(wait=False, cancel_futures=True)
+            for pid in processes:
+                try:
+                    proc = psutil.Process(pid)
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except psutil.NoSuchProcess:
+                    continue
+                except psutil.TimeoutExpired:
+                    psutil.Process(pid).kill()
+
+        executor = concurrent.futures.ProcessPoolExecutor(
             mp_context=mp.get_context("spawn"),
             max_workers=1,
-        ) as executor:
+        )
+        try:
             future = executor.submit(self.task)
             try:
                 count = future.result(timeout=self.timeout)
@@ -168,6 +182,8 @@ class SerialInsertRunner:
                 raise e from e
             else:
                 return count
+        finally:
+            stop_worker_processes()
 
     def run_endlessness(self) -> int:
         """run forever util DB raises exception or crash"""

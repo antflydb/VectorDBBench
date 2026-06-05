@@ -56,8 +56,10 @@ class Antfly(VectorDB):
         self.collection_name = collection_name
         self.dim = dim
 
+        # Antfly v0.1 used /api/v1; current antfly-zig serves the public DB API at /db/v1.
+        api_root = os.environ.get("ANTFLY_API_ROOT", "/db/v1").rstrip("/")
         self._metadata_base_url = (
-            f"http://{_httpx_host(db_config['host'])}:{db_config['port']}/api/v1"
+            f"http://{_httpx_host(db_config['host'])}:{db_config['port']}{api_root}"
         )
         self._store_host = _httpx_host(db_config.get("store_host") or db_config["host"])
         self._store_port = db_config.get("store_port")
@@ -118,7 +120,10 @@ class Antfly(VectorDB):
                     index_error.raise_for_status()
             else:
                 log.info("Reusing existing embeddings index: %s", INDEX_NAME)
-            self._wait_for_index_ready(client, expected_total=0)
+            # Do not wait for an empty external index to finish rebuilding here.
+            # antfly-zig keeps an empty external dense index in backfill state
+            # until writes arrive, and optimize(data_size=...) performs the
+            # real post-load readiness wait below.
             self._refresh_direct_search_routing(client)
         finally:
             client.close()
@@ -127,19 +132,9 @@ class Antfly(VectorDB):
         deadline = time.monotonic() + TABLE_READY_TIMEOUT
         while time.monotonic() < deadline:
             try:
-                r = client.post(
-                    f"/tables/{self.collection_name}/batch",
-                    json={
-                        "inserts": {"_healthcheck": {"_probe": True}},
-                        "sync_level": "write",
-                    },
-                )
-                if r.status_code < 500:
-                    client.post(
-                        f"/tables/{self.collection_name}/batch",
-                        json={"deletes": ["_healthcheck"], "sync_level": "write"},
-                    )
-                    log.info("Shard is ready (accepts writes)")
+                table = self._get_table_status_or_none(client)
+                if table is not None:
+                    log.info("Shard metadata is ready")
                     return
             except Exception as exc:
                 log.debug("Shard readiness probe failed", exc_info=exc)
