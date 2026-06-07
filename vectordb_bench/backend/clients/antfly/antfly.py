@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 import math
 import os
@@ -66,6 +67,7 @@ class Antfly(VectorDB):
         self._use_direct_store_search = bool(db_config.get("use_direct_store_search"))
         self._pack_query_vectors = bool(db_config.get("pack_query_vectors"))
         self._direct_shard_id: str | None = None
+        self._bench_status_last_log = 0.0
         num_shards = db_config.get("num_shards", 1)
 
         if self._use_direct_store_search and not self._store_port:
@@ -162,6 +164,100 @@ class Antfly(VectorDB):
         r.raise_for_status()
         return r.json()
 
+    def _bench_status_enabled(self) -> bool:
+        return os.environ.get("ANTFLY_BENCH_STATUS") == "1"
+
+    def _bench_status_interval(self) -> float:
+        raw = os.environ.get("ANTFLY_BENCH_STATUS_INTERVAL", "30")
+        try:
+            return max(float(raw), 1.0)
+        except ValueError:
+            return 30.0
+
+    def _maybe_log_bench_status(
+        self,
+        client: httpx.Client,
+        phase: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        if not self._bench_status_enabled():
+            return
+        now = time.monotonic()
+        if not force and now - self._bench_status_last_log < self._bench_status_interval():
+            return
+        self._bench_status_last_log = now
+
+        try:
+            table = self._get_table_status_or_none(client)
+            index = self._get_index_status(client)
+            log.info(
+                "antfly_bench_status %s",
+                json.dumps(
+                    {
+                        "phase": phase,
+                        "table": self._compact_table_status(table),
+                        "index": self._compact_index_status(index),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+        except Exception as exc:
+            log.warning("Antfly bench status probe failed: %s", exc)
+
+    @staticmethod
+    def _compact_table_status(table: dict | None) -> dict | None:
+        if table is None:
+            return None
+        shards = table.get("shards") or {}
+        storage = table.get("storage_status") or {}
+        return {
+            "name": table.get("name"),
+            "shard_count": len(shards),
+            "empty": storage.get("empty"),
+            "lsm": storage.get("lsm"),
+        }
+
+    @staticmethod
+    def _compact_index_status(index: dict | None) -> dict | None:
+        if index is None:
+            return None
+        status = index.get("status") or {}
+        async_indexing = status.get("async_indexing") or {}
+        dense_catch_up = async_indexing.get("dense_catch_up") or {}
+        hbc_cache = status.get("hbc_cache") or {}
+        return {
+            "type": (index.get("config") or {}).get("type"),
+            "rebuilding": status.get("rebuilding"),
+            "total_indexed": status.get("total_indexed"),
+            "doc_count": status.get("doc_count"),
+            "total_nodes": status.get("total_nodes"),
+            "query_visible_doc_count": status.get("query_visible_doc_count"),
+            "published_doc_count": status.get("published_doc_count"),
+            "backfill_state": status.get("backfill_state"),
+            "backfill_progress": status.get("backfill_progress"),
+            "catch_up_active": status.get("catch_up_active"),
+            "catch_up_phase": status.get("catch_up_phase"),
+            "catch_up_applied_sequence": status.get("catch_up_applied_sequence"),
+            "catch_up_target_sequence": status.get("catch_up_target_sequence"),
+            "dense_publish_pending": status.get("dense_publish_pending"),
+            "dense_catch_up": {
+                "phase": dense_catch_up.get("phase"),
+                "current_sequence": dense_catch_up.get("current_sequence"),
+                "current_target_sequence": dense_catch_up.get("current_target_sequence"),
+                "finish_calls": dense_catch_up.get("finish_calls"),
+                "finish_ns": dense_catch_up.get("finish_ns"),
+                "finalize_ns": dense_catch_up.get("finalize_ns"),
+                "maintenance_steps": dense_catch_up.get("maintenance_steps"),
+                "maintenance_ns": dense_catch_up.get("maintenance_ns"),
+                "manifest_writes": dense_catch_up.get("manifest_writes"),
+                "write_pressure_compactions": dense_catch_up.get("write_pressure_compactions"),
+                "write_pressure_ns": dense_catch_up.get("write_pressure_ns"),
+            },
+            "hbc_cache_total_bytes": hbc_cache.get("total_bytes"),
+        }
+
     def _refresh_direct_search_routing(self, client: httpx.Client):
         if not self._use_direct_store_search:
             return
@@ -203,8 +299,12 @@ class Antfly(VectorDB):
                 payload = self._get_index_status(client)
                 status = payload.get("status") if payload else None
                 last_status = status
+                self._maybe_log_bench_status(client, "optimize_wait")
                 if self._index_status_is_ready(payload, status, expected_total):
-                    log.info(f"Embeddings index is ready: {status}")
+                    log.info(
+                        "Embeddings index is ready: %s",
+                        self._compact_index_status(payload),
+                    )
                     return
             except Exception as e:
                 last_status = {"error": str(e)}
@@ -331,10 +431,14 @@ class Antfly(VectorDB):
 
     def optimize(self, data_size: int | None = None):
         if getattr(self, "client", None) is not None:
+            self._maybe_log_bench_status(self.client, "optimize_start", force=True)
             self._wait_for_index_ready(self.client, expected_total=data_size)
+            self._maybe_log_bench_status(self.client, "optimize_end", force=True)
             return
         with _make_client(self._metadata_base_url, 120) as client:
+            self._maybe_log_bench_status(client, "optimize_start", force=True)
             self._wait_for_index_ready(client, expected_total=data_size)
+            self._maybe_log_bench_status(client, "optimize_end", force=True)
 
     def insert_embeddings(
         self,
@@ -365,6 +469,7 @@ class Antfly(VectorDB):
                     f"/tables/{self.collection_name}/batch", json=payload
                 )
                 r.raise_for_status()
+                self._maybe_log_bench_status(self.client, "insert")
         except Exception as e:
             log.warning(f"Antfly insert error: {e}")
             return 0, e
