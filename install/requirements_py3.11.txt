@@ -20,11 +20,12 @@ psutil
 polars
 plotly
 environs
-pydantic<v2
+pydantic>=2.0,<3
 scikit-learn
-pymilvus
+pymilvus<3.0.0
 clickhouse_connect
 pyvespa
 mysql-connector-python
+PyMySQL
 packaging
 hdrhistogram>=0.10.1

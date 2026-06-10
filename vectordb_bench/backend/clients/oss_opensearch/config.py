@@ -1,6 +1,6 @@
 import logging
 from enum import Enum
-from typing import Any
+from typing import ClassVar
 
 from pydantic import BaseModel, SecretStr, field_validator, model_validator
 
@@ -10,6 +10,8 @@ log = logging.getLogger(__name__)
 
 
 class OSSOpenSearchConfig(DBConfig, BaseModel):
+    _extra_empty_skip: ClassVar[frozenset[str]] = frozenset({"user", "password", "host"})
+
     host: str = ""
     port: int = 80
     user: str | None = None
@@ -32,19 +34,6 @@ class OSSOpenSearchConfig(DBConfig, BaseModel):
             "ssl_show_warn": False,
             "timeout": 600,
         }
-
-    @model_validator(mode="before")
-    @classmethod
-    def not_empty_field(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            skip = set(cls.common_short_configs()) | set(cls.common_long_configs()) | {"user", "password", "host"}
-            for name, v in data.items():
-                if name in skip:
-                    continue
-                if isinstance(v, str) and len(v) == 0:
-                    msg = f"Empty string for field '{name}'!"
-                    raise ValueError(msg)
-        return data
 
 
 class OSSOS_Engine(Enum):
@@ -115,7 +104,7 @@ class OSSOpenSearchIndexConfig(BaseModel, DBCaseConfig):
 
     @field_validator("quantization_type", mode="before")
     @classmethod
-    def validate_quantization_type(cls, value: Any) -> OSSOpenSearchQuantization:
+    def validate_quantization_type(cls, value: any):
         """Convert string values to enum"""
         if not value:
             return OSSOpenSearchQuantization.NONE
@@ -133,9 +122,11 @@ class OSSOpenSearchIndexConfig(BaseModel, DBCaseConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def validate_engine_name(cls, data: Any) -> Any:
-        """Map engine_name string from UI to engine enum"""
-        if isinstance(data, dict) and data.get("engine_name"):
+    def validate_engine_name(cls, data: any) -> any:
+        if not isinstance(data, dict):
+            return data
+        # Map engine_name to engine enum
+        if data.get("engine_name"):
             engine_name = data["engine_name"].lower()
             if engine_name == "faiss":
                 data["engine"] = OSSOS_Engine.faiss

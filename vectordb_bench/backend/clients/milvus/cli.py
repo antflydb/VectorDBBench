@@ -1,7 +1,7 @@
 from typing import Annotated, TypedDict, Unpack
 
 import click
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 
 from vectordb_bench.backend.clients import DB
 from vectordb_bench.cli.cli import (
@@ -14,6 +14,17 @@ from vectordb_bench.cli.cli import (
 )
 
 DBTYPE = DB.Milvus
+
+
+def _use_partition_key(parameters: dict) -> bool:
+    explicit = parameters.get("use_partition_key")
+    if explicit is not None:
+        return explicit
+    return parameters.get("case_type") == "CloudMultiTenantSearchCase"
+
+
+def _with_partition_key(db_case_config: BaseModel, parameters: dict) -> BaseModel:
+    return db_case_config.model_copy(update={"use_partition_key": _use_partition_key(parameters)})
 
 
 class MilvusTypedDict(TypedDict):
@@ -51,6 +62,17 @@ class MilvusTypedDict(TypedDict):
             show_default=True,
         ),
     ]
+    use_partition_key: Annotated[
+        bool | None,
+        click.option(
+            "--use-partition-key/--no-use-partition-key",
+            default=None,
+            help=(
+                "Use the Milvus partition key on the label field. "
+                "Defaults to enabled for CloudMultiTenantSearchCase and disabled otherwise."
+            ),
+        ),
+    ]
 
 
 class MilvusAutoIndexTypedDict(CommonTypedDict, MilvusTypedDict): ...
@@ -71,7 +93,7 @@ def MilvusAutoIndex(**parameters: Unpack[MilvusAutoIndexTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=AutoIndexConfig(),
+        db_case_config=_with_partition_key(AutoIndexConfig(), parameters),
         **parameters,
     )
 
@@ -91,7 +113,7 @@ def MilvusFlat(**parameters: Unpack[MilvusAutoIndexTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=FLATConfig(),
+        db_case_config=_with_partition_key(FLATConfig(), parameters),
         **parameters,
     )
 
@@ -114,10 +136,13 @@ def MilvusHNSW(**parameters: Unpack[MilvusHNSWTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=HNSWConfig(
-            M=parameters["m"],
-            efConstruction=parameters["ef_construction"],
-            ef=parameters["ef_search"],
+        db_case_config=_with_partition_key(
+            HNSWConfig(
+                M=parameters["m"],
+                efConstruction=parameters["ef_construction"],
+                ef=parameters["ef_search"],
+            ),
+            parameters,
         ),
         **parameters,
     )
@@ -179,14 +204,17 @@ def MilvusHNSWPQ(**parameters: Unpack[MilvusHNSWPQTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=HNSWPQConfig(
-            M=parameters["m"],
-            efConstruction=parameters["ef_construction"],
-            ef=parameters["ef_search"],
-            nbits=parameters["nbits"],
-            refine=parameters["refine"],
-            refine_type=parameters["refine_type"],
-            refine_k=parameters["refine_k"],
+        db_case_config=_with_partition_key(
+            HNSWPQConfig(
+                M=parameters["m"],
+                efConstruction=parameters["ef_construction"],
+                ef=parameters["ef_search"],
+                nbits=parameters["nbits"],
+                refine=parameters["refine"],
+                refine_type=parameters["refine_type"],
+                refine_k=parameters["refine_k"],
+            ),
+            parameters,
         ),
         **parameters,
     )
@@ -223,15 +251,18 @@ def MilvusHNSWPRQ(**parameters: Unpack[MilvusHNSWPRQTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=HNSWPRQConfig(
-            M=parameters["m"],
-            efConstruction=parameters["ef_construction"],
-            ef=parameters["ef_search"],
-            nbits=parameters["nbits"],
-            refine=parameters["refine"],
-            refine_type=parameters["refine_type"],
-            refine_k=parameters["refine_k"],
-            nrq=parameters["nrq"],
+        db_case_config=_with_partition_key(
+            HNSWPRQConfig(
+                M=parameters["m"],
+                efConstruction=parameters["ef_construction"],
+                ef=parameters["ef_search"],
+                nbits=parameters["nbits"],
+                refine=parameters["refine"],
+                refine_type=parameters["refine_type"],
+                refine_k=parameters["refine_k"],
+                nrq=parameters["nrq"],
+            ),
+            parameters,
         ),
         **parameters,
     )
@@ -264,14 +295,17 @@ def MilvusHNSWSQ(**parameters: Unpack[MilvusHNSWSQTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=HNSWSQConfig(
-            M=parameters["m"],
-            efConstruction=parameters["ef_construction"],
-            ef=parameters["ef_search"],
-            sq_type=parameters["sq_type"],
-            refine=parameters["refine"],
-            refine_type=parameters["refine_type"],
-            refine_k=parameters["refine_k"],
+        db_case_config=_with_partition_key(
+            HNSWSQConfig(
+                M=parameters["m"],
+                efConstruction=parameters["ef_construction"],
+                ef=parameters["ef_search"],
+                sq_type=parameters["sq_type"],
+                refine=parameters["refine"],
+                refine_type=parameters["refine_type"],
+                refine_k=parameters["refine_k"],
+            ),
+            parameters,
         ),
         **parameters,
     )
@@ -295,9 +329,12 @@ def MilvusIVFFlat(**parameters: Unpack[MilvusIVFFlatTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=IVFFlatConfig(
-            nlist=parameters["nlist"],
-            nprobe=parameters["nprobe"],
+        db_case_config=_with_partition_key(
+            IVFFlatConfig(
+                nlist=parameters["nlist"],
+                nprobe=parameters["nprobe"],
+            ),
+            parameters,
         ),
         **parameters,
     )
@@ -318,9 +355,12 @@ def MilvusIVFSQ8(**parameters: Unpack[MilvusIVFFlatTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=IVFSQ8Config(
-            nlist=parameters["nlist"],
-            nprobe=parameters["nprobe"],
+        db_case_config=_with_partition_key(
+            IVFSQ8Config(
+                nlist=parameters["nlist"],
+                nprobe=parameters["nprobe"],
+            ),
+            parameters,
         ),
         **parameters,
     )
@@ -380,13 +420,16 @@ def MilvusIVFRabitQ(**parameters: Unpack[MilvusIVFRABITQTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=IVFRABITQConfig(
-            nlist=parameters["nlist"],
-            nprobe=parameters["nprobe"],
-            rbq_bits_query=parameters["rbq_bits_query"],
-            refine=parameters["refine"],
-            refine_type=parameters["refine_type"],
-            refine_k=parameters["refine_k"],
+        db_case_config=_with_partition_key(
+            IVFRABITQConfig(
+                nlist=parameters["nlist"],
+                nprobe=parameters["nprobe"],
+                rbq_bits_query=parameters["rbq_bits_query"],
+                refine=parameters["refine"],
+                refine_type=parameters["refine_type"],
+                refine_k=parameters["refine_k"],
+            ),
+            parameters,
         ),
         **parameters,
     )
@@ -411,8 +454,11 @@ def MilvusDISKANN(**parameters: Unpack[MilvusDISKANNTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=DISKANNConfig(
-            search_list=parameters["search_list"],
+        db_case_config=_with_partition_key(
+            DISKANNConfig(
+                search_list=parameters["search_list"],
+            ),
+            parameters,
         ),
         **parameters,
     )
@@ -441,11 +487,14 @@ def MilvusGPUIVFFlat(**parameters: Unpack[MilvusGPUIVFTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=GPUIVFFlatConfig(
-            nlist=parameters["nlist"],
-            nprobe=parameters["nprobe"],
-            cache_dataset_on_device=parameters["cache_dataset_on_device"],
-            refine_ratio=parameters.get("refine_ratio"),
+        db_case_config=_with_partition_key(
+            GPUIVFFlatConfig(
+                nlist=parameters["nlist"],
+                nprobe=parameters["nprobe"],
+                cache_dataset_on_device=parameters["cache_dataset_on_device"],
+                refine_ratio=parameters.get("refine_ratio"),
+            ),
+            parameters,
         ),
         **parameters,
     )
@@ -477,9 +526,184 @@ def MilvusGPUBruteForce(**parameters: Unpack[MilvusGPUBruteForceTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=GPUBruteForceConfig(
-            metric_type=parameters["metric_type"],
-            limit=parameters["limit"],  # top-k for search
+        db_case_config=_with_partition_key(
+            GPUBruteForceConfig(
+                metric_type=parameters["metric_type"],
+                limit=parameters["limit"],  # top-k for search
+            ),
+            parameters,
+        ),
+        **parameters,
+    )
+
+
+class MilvusSVSVamanaTypedDict(CommonTypedDict, MilvusTypedDict):
+    svs_graph_max_degree: Annotated[
+        int,
+        click.option(
+            "--svs-graph-max-degree",
+            type=int,
+            help="Maximum degree of the Vamana graph (4-256).",
+            required=True,
+        ),
+    ]
+    svs_construction_window_size: Annotated[
+        int,
+        click.option(
+            "--svs-construction-window-size",
+            type=int,
+            help="Window size for graph construction.",
+            required=False,
+            default=40,
+            show_default=True,
+        ),
+    ]
+    svs_alpha: Annotated[
+        float | None,
+        click.option(
+            "--svs-alpha",
+            type=float,
+            help="Pruning parameter (default: 1.2 for L2, 0.95 for IP/COSINE).",
+            required=False,
+            default=None,
+        ),
+    ]
+    svs_storage_kind: Annotated[
+        str,
+        click.option(
+            "--svs-storage-kind",
+            type=click.Choice(
+                ["fp32", "fp16", "sqi8", "lvq4x0", "lvq4x4", "lvq4x8", "leanvec4x4", "leanvec4x8", "leanvec8x8"],
+                case_sensitive=False,
+            ),
+            help="Data storage format.",
+            required=False,
+            default="fp32",
+            show_default=True,
+        ),
+    ]
+    svs_search_window_size: Annotated[
+        int | None,
+        click.option(
+            "--svs-search-window-size",
+            type=int,
+            help="Window size for search (1-10000).",
+            required=False,
+            default=None,
+        ),
+    ]
+    svs_search_buffer_capacity: Annotated[
+        int | None,
+        click.option(
+            "--svs-search-buffer-capacity",
+            type=int,
+            help="Buffer capacity for search priority queue (1-10000).",
+            required=False,
+            default=None,
+        ),
+    ]
+
+
+@cli.command()
+@click_parameter_decorators_from_typed_dict(MilvusSVSVamanaTypedDict)
+def MilvusSVSVamana(**parameters: Unpack[MilvusSVSVamanaTypedDict]):
+    from .config import MilvusConfig, SVSVamanaConfig
+
+    run(
+        db=DBTYPE,
+        db_config=MilvusConfig(
+            db_label=parameters["db_label"],
+            uri=SecretStr(parameters["uri"]),
+            user=parameters["user_name"],
+            password=SecretStr(parameters["password"]) if parameters["password"] else None,
+            num_shards=int(parameters["num_shards"]),
+            replica_number=int(parameters["replica_number"]),
+        ),
+        db_case_config=_with_partition_key(
+            SVSVamanaConfig(
+                svs_graph_max_degree=parameters["svs_graph_max_degree"],
+                svs_construction_window_size=parameters["svs_construction_window_size"],
+                svs_alpha=parameters["svs_alpha"],
+                svs_storage_kind=parameters["svs_storage_kind"],
+                svs_search_window_size=parameters["svs_search_window_size"],
+                svs_search_buffer_capacity=parameters["svs_search_buffer_capacity"],
+            ),
+            parameters,
+        ),
+        **parameters,
+    )
+
+
+@cli.command()
+@click_parameter_decorators_from_typed_dict(MilvusSVSVamanaTypedDict)
+def MilvusSVSVamanaLVQ(**parameters: Unpack[MilvusSVSVamanaTypedDict]):
+    from .config import MilvusConfig, SVSVamanaLVQConfig
+
+    run(
+        db=DBTYPE,
+        db_config=MilvusConfig(
+            db_label=parameters["db_label"],
+            uri=SecretStr(parameters["uri"]),
+            user=parameters["user_name"],
+            password=SecretStr(parameters["password"]) if parameters["password"] else None,
+            num_shards=int(parameters["num_shards"]),
+            replica_number=int(parameters["replica_number"]),
+        ),
+        db_case_config=_with_partition_key(
+            SVSVamanaLVQConfig(
+                svs_graph_max_degree=parameters["svs_graph_max_degree"],
+                svs_construction_window_size=parameters["svs_construction_window_size"],
+                svs_alpha=parameters["svs_alpha"],
+                svs_storage_kind=parameters["svs_storage_kind"],
+                svs_search_window_size=parameters["svs_search_window_size"],
+                svs_search_buffer_capacity=parameters["svs_search_buffer_capacity"],
+            ),
+            parameters,
+        ),
+        **parameters,
+    )
+
+
+class MilvusSVSVamanaLeanVecTypedDict(MilvusSVSVamanaTypedDict):
+    svs_leanvec_dim: Annotated[
+        int,
+        click.option(
+            "--svs-leanvec-dim",
+            type=int,
+            help="Dimensionality for LeanVec compression (0 = d/2).",
+            required=False,
+            default=0,
+            show_default=True,
+        ),
+    ]
+
+
+@cli.command()
+@click_parameter_decorators_from_typed_dict(MilvusSVSVamanaLeanVecTypedDict)
+def MilvusSVSVamanaLeanVec(**parameters: Unpack[MilvusSVSVamanaLeanVecTypedDict]):
+    from .config import MilvusConfig, SVSVamanaLeanVecConfig
+
+    run(
+        db=DBTYPE,
+        db_config=MilvusConfig(
+            db_label=parameters["db_label"],
+            uri=SecretStr(parameters["uri"]),
+            user=parameters["user_name"],
+            password=SecretStr(parameters["password"]) if parameters["password"] else None,
+            num_shards=int(parameters["num_shards"]),
+            replica_number=int(parameters["replica_number"]),
+        ),
+        db_case_config=_with_partition_key(
+            SVSVamanaLeanVecConfig(
+                svs_graph_max_degree=parameters["svs_graph_max_degree"],
+                svs_construction_window_size=parameters["svs_construction_window_size"],
+                svs_alpha=parameters["svs_alpha"],
+                svs_storage_kind=parameters["svs_storage_kind"],
+                svs_search_window_size=parameters["svs_search_window_size"],
+                svs_search_buffer_capacity=parameters["svs_search_buffer_capacity"],
+                svs_leanvec_dim=parameters["svs_leanvec_dim"],
+            ),
+            parameters,
         ),
         **parameters,
     )
@@ -510,13 +734,16 @@ def MilvusGPUIVFPQ(**parameters: Unpack[MilvusGPUIVFPQTypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=GPUIVFPQConfig(
-            nlist=parameters["nlist"],
-            nprobe=parameters["nprobe"],
-            m=parameters["m"],
-            nbits=parameters["nbits"],
-            cache_dataset_on_device=parameters["cache_dataset_on_device"],
-            refine_ratio=parameters["refine_ratio"],
+        db_case_config=_with_partition_key(
+            GPUIVFPQConfig(
+                nlist=parameters["nlist"],
+                nprobe=parameters["nprobe"],
+                m=parameters["m"],
+                nbits=parameters["nbits"],
+                cache_dataset_on_device=parameters["cache_dataset_on_device"],
+                refine_ratio=parameters["refine_ratio"],
+            ),
+            parameters,
         ),
         **parameters,
     )
@@ -551,17 +778,20 @@ def MilvusGPUCAGRA(**parameters: Unpack[MilvusGPUCAGRATypedDict]):
             num_shards=int(parameters["num_shards"]),
             replica_number=int(parameters["replica_number"]),
         ),
-        db_case_config=GPUCAGRAConfig(
-            intermediate_graph_degree=parameters["intermediate_graph_degree"],
-            graph_degree=parameters["graph_degree"],
-            itopk_size=parameters["itopk_size"],
-            team_size=parameters["team_size"],
-            search_width=parameters["search_width"],
-            min_iterations=parameters["min_iterations"],
-            max_iterations=parameters["max_iterations"],
-            build_algo=parameters["build_algo"],
-            cache_dataset_on_device=parameters["cache_dataset_on_device"],
-            refine_ratio=parameters["refine_ratio"],
+        db_case_config=_with_partition_key(
+            GPUCAGRAConfig(
+                intermediate_graph_degree=parameters["intermediate_graph_degree"],
+                graph_degree=parameters["graph_degree"],
+                itopk_size=parameters["itopk_size"],
+                team_size=parameters["team_size"],
+                search_width=parameters["search_width"],
+                min_iterations=parameters["min_iterations"],
+                max_iterations=parameters["max_iterations"],
+                build_algo=parameters["build_algo"],
+                cache_dataset_on_device=parameters["cache_dataset_on_device"],
+                refine_ratio=parameters["refine_ratio"],
+            ),
+            parameters,
         ),
         **parameters,
     )

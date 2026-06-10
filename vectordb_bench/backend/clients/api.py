@@ -1,11 +1,12 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from vectordb_bench.backend.filter import Filter, FilterOp
+from vectordb_bench.backend.payload import PayloadProfile
 
 
 class MetricType(StrEnum):
@@ -43,7 +44,12 @@ class IndexType(StrEnum):
     GPU_IVF_PQ = "GPU_IVF_PQ"
     GPU_CAGRA = "GPU_CAGRA"
     SCANN = "scann"
+    VCHORDRQ = "vchordrq"
+    VCHORDG = "vchordg"
     SCANN_MILVUS = "SCANN_MILVUS"
+    SVS_VAMANA = "SVS_VAMANA"
+    SVS_VAMANA_LVQ = "SVS_VAMANA_LVQ"
+    SVS_VAMANA_LEANVEC = "SVS_VAMANA_LEANVEC"
     Hologres_HGraph = "HGraph"
     Hologres_Graph = "Graph"
     NONE = "NONE"
@@ -56,6 +62,29 @@ class SQType(StrEnum):
     BF16 = "BF16"
     FP16 = "FP16"
     FP32 = "FP32"
+
+
+class NonRetryableInsertError(RuntimeError):
+    non_retryable = True
+
+
+class PartialInsertError(NonRetryableInsertError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        inserted_count: int,
+        successful_tenants: dict[str, int] | None = None,
+        failed_tenant: str | None = None,
+        failed_tenant_count: int | None = None,
+        cause: Exception | None = None,
+    ):
+        super().__init__(message)
+        self.inserted_count = inserted_count
+        self.successful_tenants = successful_tenants or {}
+        self.failed_tenant = failed_tenant
+        self.failed_tenant_count = failed_tenant_count
+        self.__cause__ = cause
 
 
 class DBConfig(ABC, BaseModel):
@@ -74,6 +103,9 @@ class DBConfig(ABC, BaseModel):
     db_label: str = ""
     version: str = ""
     note: str = ""
+
+    # Field names subclasses allow to be empty (optional creds, alt-route fields).
+    _extra_empty_skip: ClassVar[frozenset[str]] = frozenset()
 
     @staticmethod
     def common_short_configs() -> list[str]:
@@ -96,14 +128,13 @@ class DBConfig(ABC, BaseModel):
     @model_validator(mode="before")
     @classmethod
     def not_empty_field(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            skip = set(cls.common_short_configs()) | set(cls.common_long_configs())
-            for name, v in data.items():
-                if name in skip:
-                    continue
-                if isinstance(v, str) and len(v) == 0:
-                    msg = f"Empty string for field '{name}'!"
-                    raise ValueError(msg)
+        if not isinstance(data, dict):
+            return data
+        skip = set(cls.common_short_configs()) | set(cls.common_long_configs()) | cls._extra_empty_skip
+        empty = [k for k, v in data.items() if k not in skip and isinstance(v, str) and not v]
+        if empty:
+            msg = f"Empty field(s): {', '.join(empty)}"
+            raise ValueError(msg)
         return data
 
 
@@ -148,6 +179,11 @@ class VectorDB(ABC):
     "The filtering types supported by the VectorDB Client, default only non-filter"
     supported_filter_types: list[FilterOp] = [FilterOp.NonFilter]
     name: str = ""
+
+    # Whether the client can share a single connection across threads.
+    # If False, concurrent runners will deep-copy the instance and call
+    # init() per thread instead of sharing the parent connection.
+    thread_safe: bool = True
 
     @classmethod
     def filter_supported(cls, filters: Filter) -> bool:
@@ -206,12 +242,28 @@ class VectorDB(ABC):
         """Wheather this database need to normalize dataset to support COSINE"""
         return False
 
+    def supports_payload_profile(self, payload_profile: PayloadProfile) -> bool:
+        return payload_profile == PayloadProfile.IDS_ONLY
+
+    def poll_insert_readiness(self, expected_count: int) -> dict:
+        return {"fully_searchable": True, "fully_indexed": True, "additional_parameters": {}}
+
+    def set_multitenant_context(self, tenant_labels: list[str]) -> None:
+        self.multitenant_tenant_labels = tenant_labels
+
+    def supports_multitenant(self) -> bool:
+        return False
+
+    def validate_multitenant_schema(self) -> None:
+        return None
+
     @abstractmethod
     def insert_embeddings(
         self,
         embeddings: list[list[float]],
         metadata: list[int],
         labels_data: list[str] | None = None,
+        tenant_labels_data: list[str] | None = None,
         **kwargs,
     ) -> tuple[int, Exception]:
         """Insert the embeddings to the vector database. The default number of embeddings for
@@ -232,6 +284,8 @@ class VectorDB(ABC):
         self,
         query: list[float],
         k: int = 100,
+        payload_profile: PayloadProfile = PayloadProfile.IDS_ONLY,
+        tenant: str | None = None,
     ) -> list[int]:
         """Get k most similar embeddings to query vector.
 

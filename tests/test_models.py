@@ -1,17 +1,17 @@
-import pytest
 import logging
-from vectordb_bench.models import (
-    TaskConfig, CaseConfig,
-    CaseResult, TestResult,
-    Metric, CaseType
-)
-from vectordb_bench.backend.clients import (
-    DB,
-    IndexType
-)
+
+import pytest
 
 from vectordb_bench import config
-
+from vectordb_bench.backend.clients import DB, IndexType
+from vectordb_bench.models import (
+    CaseConfig,
+    CaseResult,
+    CaseType,
+    Metric,
+    TaskConfig,
+    TestResult,
+)
 
 log = logging.getLogger("vectordb_bench")
 
@@ -32,7 +32,7 @@ class TestModels:
         test_result = TestResult(run_id=10000, results=[result])
         test_result.flush()
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="No such file"):
             result = TestResult.read_file('nosuchfile.json')
 
     def test_test_result_read_write(self):
@@ -46,7 +46,7 @@ class TestModels:
         all_results = []
 
         first_result = None
-        for json_file in result_dir.glob("*.json"):
+        for json_file in result_dir.rglob("result*.json"):
             res = TestResult.read_file(json_file)
 
             for cr in res.results:
