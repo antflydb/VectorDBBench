@@ -42,6 +42,21 @@ def _make_client(base_url: str, timeout: float) -> httpx.Client:
     )
 
 
+def _detect_api_root(host: str, port: int) -> str:
+    # Prefer the current antfly-zig public API root, falling back to the
+    # legacy /api/v1 root served by Go binaries. The content-type check
+    # matters: legacy binaries answer unknown /db/v1 paths with the dashboard
+    # SPA (200 text/html), not a 404.
+    for root in ("/db/v1", "/api/v1"):
+        try:
+            r = httpx.get(f"http://{host}:{port}{root}/tables", timeout=5)
+        except httpx.HTTPError:
+            continue
+        if r.status_code < 500 and "json" in r.headers.get("content-type", ""):
+            return root
+    return "/db/v1"
+
+
 class Antfly(VectorDB):
     def __init__(
         self,
@@ -57,8 +72,15 @@ class Antfly(VectorDB):
         self.collection_name = collection_name
         self.dim = dim
 
-        # Antfly v0.1 used /api/v1; current antfly-zig serves the public DB API at /db/v1.
-        api_root = os.environ.get("ANTFLY_API_ROOT", "/db/v1").rstrip("/")
+        # Antfly v0.1 used /api/v1; current antfly-zig serves the public DB API
+        # at /db/v1. Auto-detect unless ANTFLY_API_ROOT pins it explicitly.
+        api_root = os.environ.get("ANTFLY_API_ROOT", "").rstrip("/")
+        if not api_root:
+            api_root = _detect_api_root(
+                _httpx_host(db_config["host"]), db_config["port"]
+            )
+            log.info(f"Detected Antfly API root: {api_root}")
+        self._legacy_api = api_root == "/api/v1"
         self._metadata_base_url = (
             f"http://{_httpx_host(db_config['host'])}:{db_config['port']}{api_root}"
         )
@@ -92,6 +114,10 @@ class Antfly(VectorDB):
                 log.info("Reusing existing table: %s", self.collection_name)
 
             self._wait_for_shard_ready(client)
+            # Wait for the write path before touching indexes: legacy (Go)
+            # binaries can permanently orphan a shard if an index-add lands
+            # while the shard is still initializing.
+            self._wait_for_write_ready(client)
 
             if self._get_index_status(client) is None:
                 index_def = {
@@ -102,9 +128,17 @@ class Antfly(VectorDB):
                 }
                 index_error = None
                 # Try each index type, with and without field, to handle
-                # both old binaries (require field) and new source (reject field with external).
+                # both old binaries (require field) and new source (reject
+                # field with external). Order matters: legacy binaries accept
+                # the field-less variant at the metadata layer but shard-level
+                # registration then fails forever ("field or template must be
+                # specified"), so on the legacy API try the field variant first.
+                if api_root == "/api/v1":
+                    field_variants = ({"field": SOURCE_FIELD}, {})
+                else:
+                    field_variants = ({}, {"field": SOURCE_FIELD})
                 for index_type in INDEX_TYPES:
-                    for extra in ({}, {"field": SOURCE_FIELD}):
+                    for extra in field_variants:
                         r = client.post(
                             f"/tables/{self.collection_name}/indexes/{INDEX_NAME}",
                             json={"type": index_type, **index_def, **extra},
@@ -143,6 +177,36 @@ class Antfly(VectorDB):
             time.sleep(TABLE_READY_POLL_INTERVAL)
         log.warning(
             f"Shard readiness timeout after {TABLE_READY_TIMEOUT}s, proceeding anyway"
+        )
+
+    def _wait_for_write_ready(self, client: httpx.Client):
+        # Table metadata appearing does not mean shards accept writes yet:
+        # legacy (Go) binaries return 500 "shard is still initializing" for a
+        # few seconds after table creation. Probe with a throwaway document
+        # (no embedding, so it never lands in the vector index) until a batch
+        # write succeeds, then delete it.
+        probe_key = "key:__circus_write_probe__"
+        deadline = time.monotonic() + TABLE_READY_TIMEOUT
+        last_error = None
+        while time.monotonic() < deadline:
+            try:
+                r = client.post(
+                    f"/tables/{self.collection_name}/batch",
+                    json={"inserts": {probe_key: {"id": -1}}, "sync_level": "write"},
+                )
+                if r.is_success:
+                    client.post(
+                        f"/tables/{self.collection_name}/batch",
+                        json={"deletes": [probe_key], "sync_level": "write"},
+                    )
+                    log.info("Write path is ready")
+                    return
+                last_error = f"{r.status_code}: {r.text[:120]}"
+            except Exception as exc:
+                last_error = str(exc)
+            time.sleep(TABLE_READY_POLL_INTERVAL)
+        log.warning(
+            f"Write readiness timeout after {TABLE_READY_TIMEOUT}s ({last_error}), proceeding anyway"
         )
 
     def _get_index_status(self, client: httpx.Client) -> dict | None:
@@ -366,7 +430,12 @@ class Antfly(VectorDB):
             return self._pack_vector(vector)
         return vector
 
-    def _serialize_insert_vector(self, vector: list[float]) -> str:
+    def _serialize_insert_vector(self, vector: list[float]) -> str | list[float]:
+        # Legacy 0.1.0 binaries reject the packed base64 format on writes
+        # ("embedding ... must be an array (dense) or object (sparse), got
+        # string"); plain JSON arrays are accepted by every version.
+        if self._legacy_api:
+            return vector
         return self._pack_vector(vector)
 
     def _metadata_query_body(self, query: list[float], k: int) -> dict[str, Any]:
