@@ -111,14 +111,14 @@ class Antfly(VectorDB):
                 )
                 log.info(f"Create table response: {r.status_code}")
                 r.raise_for_status()
+                self._wait_for_shard_ready(client)
+                # Wait for the write path before touching indexes: legacy (Go)
+                # binaries can permanently orphan a shard if an index-add lands
+                # while the shard is still initializing.
+                self._wait_for_write_ready(client)
             else:
                 log.info("Reusing existing table: %s", self.collection_name)
-
-            self._wait_for_shard_ready(client)
-            # Wait for the write path before touching indexes: legacy (Go)
-            # binaries can permanently orphan a shard if an index-add lands
-            # while the shard is still initializing.
-            self._wait_for_write_ready(client)
+                self._wait_for_shard_ready(client)
 
             if self._get_index_status(client) is None:
                 index_def = {

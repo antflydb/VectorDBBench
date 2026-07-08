@@ -9,6 +9,8 @@ from ....cli.cli import (
     click_parameter_decorators_from_typed_dict,
     run,
 )
+from ...cases import CaseType
+from ..api import MetricType
 from .. import DB
 
 
@@ -56,6 +58,16 @@ class AntflyTypedDict(TypedDict):
             show_default=True,
         ),
     ]
+    metric_type: Annotated[
+        str | None,
+        click.option(
+            "--metric-type",
+            type=click.Choice([metric.value for metric in MetricType]),
+            help="Distance metric override. Defaults to the selected VDBBench case dataset metric.",
+            default=None,
+            show_default=True,
+        ),
+    ]
 
 
 class AntflyAKNNTypedDict(CommonTypedDict, AntflyTypedDict): ...
@@ -65,6 +77,12 @@ class AntflyAKNNTypedDict(CommonTypedDict, AntflyTypedDict): ...
 @click_parameter_decorators_from_typed_dict(AntflyAKNNTypedDict)
 def AntflyAKNN(**parameters: Unpack[AntflyAKNNTypedDict]):
     from .config import AntflyConfig, AntflyIndexConfig
+
+    metric_type = (
+        MetricType(parameters["metric_type"])
+        if parameters["metric_type"]
+        else CaseType[parameters["case_type"]].case_cls(parameters.get("custom_case")).dataset.data.metric_type
+    )
 
     run(
         db=DB.Antfly,
@@ -81,6 +99,7 @@ def AntflyAKNN(**parameters: Unpack[AntflyAKNNTypedDict]):
             pack_query_vectors=parameters["pack_query_vectors"],
         ),
         db_case_config=AntflyIndexConfig(
+            metric_type=metric_type,
             num_shards=parameters["num_shards"],
             search_effort=parameters["search_effort"],
         ),
