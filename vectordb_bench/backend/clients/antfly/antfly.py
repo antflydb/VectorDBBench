@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from ..api import DBCaseConfig, MetricType, VectorDB
+from ...payload import PayloadProfile
 
 log = logging.getLogger(__name__)
 
@@ -442,6 +443,7 @@ class Antfly(VectorDB):
         return {
             "embeddings": {"vec": self._serialize_query_vector(query)},
             "limit": k,
+            "fields": [],
             **self.case_config.search_param(),
         }
 
@@ -548,10 +550,15 @@ class Antfly(VectorDB):
         self,
         query: list[float],
         k: int = 100,
+        payload_profile: PayloadProfile = PayloadProfile.IDS_ONLY,
         filters: dict | None = None,
         timeout: int | None = None,
         **kwargs: Any,
     ) -> list[int]:
+        if payload_profile != PayloadProfile.IDS_ONLY:
+            raise NotImplementedError(
+                f"Antfly VDBBench adapter only supports payload_profile={PayloadProfile.IDS_ONLY.value}"
+            )
         if self._uses_cosine_distance():
             query = self._normalize_vector(query)
 
