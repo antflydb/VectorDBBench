@@ -36,6 +36,12 @@ def _pack_dense_f32(values: list[float]) -> str:
 
 
 def _make_client(base_url: str, timeout: float) -> httpx.Client:
+    raw_timeout = os.environ.get("ANTFLY_VDBBENCH_HTTP_TIMEOUT")
+    if raw_timeout:
+        try:
+            timeout = float(raw_timeout)
+        except ValueError:
+            log.warning("Ignoring invalid ANTFLY_VDBBENCH_HTTP_TIMEOUT=%r", raw_timeout)
     return httpx.Client(
         base_url=base_url,
         timeout=timeout,
@@ -89,6 +95,10 @@ class Antfly(VectorDB):
         self._store_port = db_config.get("store_port")
         self._use_direct_store_search = bool(db_config.get("use_direct_store_search"))
         self._pack_query_vectors = bool(db_config.get("pack_query_vectors"))
+        self._write_sync_level = os.environ.get(
+            "ANTFLY_VDBBENCH_SYNC_LEVEL",
+            "write" if self._legacy_api else "full_index",
+        )
         self._direct_shard_id: str | None = None
         self._bench_status_last_log = 0.0
         num_shards = db_config.get("num_shards", 1)
@@ -535,7 +545,7 @@ class Antfly(VectorDB):
                         SOURCE_FIELD: str(metadata[i]),
                         "_embeddings": {"vec": serialized_embedding},
                     }
-                payload = {"inserts": inserts, "sync_level": "write"}
+                payload = {"inserts": inserts, "sync_level": self._write_sync_level}
                 r = self.client.post(
                     f"/tables/{self.collection_name}/batch", json=payload
                 )
