@@ -97,8 +97,20 @@ class Antfly(VectorDB):
         self._pack_query_vectors = bool(db_config.get("pack_query_vectors"))
         self._write_sync_level = os.environ.get(
             "ANTFLY_VDBBENCH_SYNC_LEVEL",
-            "write" if self._legacy_api else "full_index",
+            "write",
         )
+        # TEMPORARY client-side backpressure for async sync levels, until the
+        # server applies its own under sustained ingest. With sync_level
+        # "write" nothing throttles inserts, and a sustained 1M load outruns
+        # dense catch-up + LSM compaction until the write path stalls
+        # (observed as insert timeouts around 200-600k docs). Pause between
+        # batches whenever the server-reported catch-up backlog exceeds
+        # max_lag sequences (~100 docs per sequence), resuming at resume_lag.
+        # Remove once the server keeps catch-up healthy on its own.
+        self._pace_max_lag = int(os.environ.get("ANTFLY_VDBBENCH_MAX_LAG_SEQ", "200"))
+        self._pace_resume_lag = int(os.environ.get("ANTFLY_VDBBENCH_RESUME_LAG_SEQ", "50"))
+        self._pace_check_every = int(os.environ.get("ANTFLY_VDBBENCH_PACE_EVERY", "5"))
+        self._pace_batches_since_check = 0
         self._direct_shard_id: str | None = None
         self._bench_status_last_log = 0.0
         num_shards = db_config.get("num_shards", 1)
@@ -195,7 +207,11 @@ class Antfly(VectorDB):
         # legacy (Go) binaries return 500 "shard is still initializing" for a
         # few seconds after table creation. Probe with a throwaway document
         # (no embedding, so it never lands in the vector index) until a batch
-        # write succeeds, then delete it.
+        # write succeeds. The probe doc is intentionally left in place: deleting
+        # it would leave a tombstone, and a table that has ever deleted a doc
+        # loses the "all docs visible" fast path — every dense query then
+        # materializes the full live-doc set as a positive filter, which costs
+        # O(table size) per query (~40ms/query at 1M docs).
         probe_key = "key:__circus_write_probe__"
         deadline = time.monotonic() + TABLE_READY_TIMEOUT
         last_error = None
@@ -206,10 +222,6 @@ class Antfly(VectorDB):
                     json={"inserts": {probe_key: {"id": -1}}, "sync_level": "write"},
                 )
                 if r.is_success:
-                    client.post(
-                        f"/tables/{self.collection_name}/batch",
-                        json={"deletes": [probe_key], "sync_level": "write"},
-                    )
                     log.info("Write path is ready")
                     return
                 last_error = f"{r.status_code}: {r.text[:120]}"
@@ -521,6 +533,33 @@ class Antfly(VectorDB):
             self._wait_for_index_ready(client, expected_total=data_size)
             self._maybe_log_bench_status(client, "optimize_end", force=True)
 
+    def _catch_up_lag_sequences(self) -> int | None:
+        try:
+            payload = self._get_index_status(self.client)
+            status = (payload or {}).get("status") or {}
+            applied = status.get("catch_up_applied_sequence")
+            target = status.get("catch_up_target_sequence")
+            if applied is None or target is None:
+                return None
+            return max(0, int(target) - int(applied))
+        except Exception:
+            return None
+
+    def _pace_async_indexing(self) -> None:
+        if self._pace_max_lag <= 0 or self._write_sync_level == "full_index":
+            return
+        self._pace_batches_since_check += 1
+        if self._pace_batches_since_check < self._pace_check_every:
+            return
+        self._pace_batches_since_check = 0
+        lag = self._catch_up_lag_sequences()
+        if lag is None or lag <= self._pace_max_lag:
+            return
+        log.info("Antfly pacing: catch-up lag %d sequences, waiting", lag)
+        while lag is not None and lag > self._pace_resume_lag:
+            time.sleep(1)
+            lag = self._catch_up_lag_sequences()
+
     def insert_embeddings(
         self,
         embeddings: list[list[float]],
@@ -551,6 +590,7 @@ class Antfly(VectorDB):
                 )
                 r.raise_for_status()
                 self._maybe_log_bench_status(self.client, "insert")
+                self._pace_async_indexing()
         except Exception as e:
             log.warning(f"Antfly insert error: {e}")
             return 0, e
