@@ -90,8 +90,11 @@ class PgVector(VectorDB):
     @staticmethod
     def _create_connection(**kwargs) -> tuple[Connection, Cursor]:
         conn = psycopg.connect(**kwargs)
-        register_vector(conn)
         conn.autocommit = False
+        with conn.cursor() as cursor:
+            cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.commit()
+        register_vector(conn)
         cursor = conn.cursor()
 
         assert conn is not None, "Connection is not initialized"

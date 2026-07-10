@@ -56,8 +56,8 @@ all = [
     "grpcio-tools==1.53.0", # for qdrant-client and pymilvus
     "qdrant-client",
     "pinecone",
-    "weaviate-client",
-    "elasticsearch",
+    "weaviate-client>=3.26.7,<4.0.0",
+    "elasticsearch==8.16.0",
     "sqlalchemy",
     "redis",
     "chromadb",
@@ -83,8 +83,8 @@ all = [
 ]
 qdrant          = [ "qdrant-client" ]
 pinecone        = [ "pinecone" ]
-weaviate        = [ "weaviate-client" ]
-elastic         = [ "elasticsearch" ]
+weaviate        = [ "weaviate-client>=3.26.7,<4.0.0" ]
+elastic         = [ "elasticsearch==8.16.0" ]
 # For elastic and aliyun_elasticsearch
 
 pgvector        = [ "psycopg", "psycopg-binary", "pgvector" ]

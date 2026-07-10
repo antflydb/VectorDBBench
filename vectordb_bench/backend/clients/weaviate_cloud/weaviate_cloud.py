@@ -13,6 +13,8 @@ log = logging.getLogger(__name__)
 
 
 class WeaviateCloud(VectorDB):
+    thread_safe: bool = False
+
     def __init__(
         self,
         dim: int,
@@ -23,6 +25,7 @@ class WeaviateCloud(VectorDB):
         **kwargs,
     ):
         """Initialize wrapper around the weaviate vector database."""
+        self.name = "WeaviateCloud"
         db_config.update(
             {
                 "auth_client_secret": weaviate.AuthApiKey(

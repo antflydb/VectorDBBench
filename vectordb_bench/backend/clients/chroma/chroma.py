@@ -35,10 +35,10 @@ class ChromaClient(VectorDB):
 
         if drop_old:
             try:
-                client.reset()
-            except Exception:
-                drop_old = False
                 log.info(f"Chroma client drop_old collection: {self.collection_name}")
+                client.delete_collection(self.collection_name)
+            except Exception as e:
+                log.info(f"Chroma client collection was not dropped: {self.collection_name}, error: {e!s}")
 
         self.client = None
         self.collection = None
