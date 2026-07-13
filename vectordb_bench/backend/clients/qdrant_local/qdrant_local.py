@@ -19,6 +19,8 @@ from qdrant_client.http.models import (
     VectorParams,
 )
 
+from vectordb_bench.backend.filter import Filter as BenchFilter, FilterOp
+
 from ..api import VectorDB
 from .config import QdrantLocalIndexConfig
 
@@ -40,6 +42,11 @@ def qdrant_collection_exists(client: QdrantClient, collection_name: str) -> bool
 
 
 class QdrantLocal(VectorDB):
+    supported_filter_types: list[FilterOp] = [
+        FilterOp.NonFilter,
+        FilterOp.NumGE,
+    ]
+
     def __init__(
         self,
         dim: int,
@@ -60,6 +67,7 @@ class QdrantLocal(VectorDB):
 
         self._primary_field = "pk"
         self._vector_field = "vector"
+        self._query_filter: Filter | None = None
 
         client = QdrantClient(**self.db_config)
 
@@ -209,25 +217,28 @@ class QdrantLocal(VectorDB):
         """
         assert self.client is not None
 
-        f = None
-        if filters:
-            f = Filter(
-                must=[
-                    FieldCondition(
-                        key=self._primary_field,
-                        range=Range(
-                            gt=filters.get("id"),
-                        ),
-                    ),
-                ],
-            )
         res = self.client.query_points(
             collection_name=self.collection_name,
             query=query,
             limit=k,
-            query_filter=f,
+            query_filter=self._query_filter,
             search_params=SearchParams(**self.search_parameter),
             timeout=timeout,
         ).points
 
         return [result.id for result in res]
+
+    def prepare_filter(self, filters: BenchFilter):
+        if filters.type == FilterOp.NonFilter:
+            self._query_filter = None
+        elif filters.type == FilterOp.NumGE:
+            self._query_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key=self._primary_field,
+                        range=Range(gte=filters.int_value),
+                    )
+                ]
+            )
+        else:
+            raise ValueError(f"Unsupported QdrantLocal filter: {filters}")

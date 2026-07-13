@@ -7,6 +7,7 @@ from ....cli.cli import (
     CommonTypedDict,
     cli,
     click_parameter_decorators_from_typed_dict,
+    get_custom_case_config,
     run,
 )
 from ...cases import CaseType
@@ -81,7 +82,9 @@ def AntflyAKNN(**parameters: Unpack[AntflyAKNNTypedDict]):
     metric_type = (
         MetricType(parameters["metric_type"])
         if parameters["metric_type"]
-        else CaseType[parameters["case_type"]].case_cls(parameters.get("custom_case")).dataset.data.metric_type
+        else CaseType[parameters["case_type"]]
+        .case_cls(get_custom_case_config(parameters))
+        .dataset.data.metric_type
     )
 
     run(

@@ -3,6 +3,8 @@ from contextlib import contextmanager
 
 import chromadb
 
+from vectordb_bench.backend.filter import Filter, FilterOp
+
 from ..api import VectorDB
 from .config import ChromaIndexConfig
 
@@ -16,6 +18,11 @@ class ChromaClient(VectorDB):
 
     To change to running in process, modify the HttpClient() in __init__() and init().
     """
+
+    supported_filter_types: list[FilterOp] = [
+        FilterOp.NonFilter,
+        FilterOp.NumGE,
+    ]
 
     def __init__(
         self,
@@ -42,6 +49,7 @@ class ChromaClient(VectorDB):
 
         self.client = None
         self.collection = None
+        self._where_filter: dict | None = None
 
     @contextmanager
     def init(self):
@@ -85,10 +93,18 @@ class ChromaClient(VectorDB):
         self, query: list[float], k: int = 100, filters: dict | None = None, timeout: int | None = None
     ) -> list[int]:
         assert self.client is not None, "Please call self.init() before"
-        if filters:
+        if self._where_filter is not None:
             results = self.collection.query(
-                query_embeddings=[query], n_results=k, where={"id": {"$gt": filters.get("id")}}
+                query_embeddings=[query], n_results=k, where=self._where_filter
             )
         else:
             results = self.collection.query(query_embeddings=[query], n_results=k)
         return [int(idx) for idx in results["ids"][0]]
+
+    def prepare_filter(self, filters: Filter):
+        if filters.type == FilterOp.NonFilter:
+            self._where_filter = None
+        elif filters.type == FilterOp.NumGE:
+            self._where_filter = {"index": {"$gte": filters.int_value}}
+        else:
+            raise ValueError(f"Unsupported Chroma filter: {filters}")

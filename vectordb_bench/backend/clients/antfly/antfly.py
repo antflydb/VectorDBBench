@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from ..api import DBCaseConfig, MetricType, VectorDB
+from ...filter import Filter, FilterOp
 from ...payload import PayloadProfile
 
 log = logging.getLogger(__name__)
@@ -65,6 +66,12 @@ def _detect_api_root(host: str, port: int) -> str:
 
 
 class Antfly(VectorDB):
+    supported_filter_types: list[FilterOp] = [
+        FilterOp.NonFilter,
+        FilterOp.NumGE,
+        FilterOp.StrEqual,
+    ]
+
     def __init__(
         self,
         dim: int,
@@ -72,12 +79,15 @@ class Antfly(VectorDB):
         db_case_config: DBCaseConfig,
         collection_name: str = "vdbbench",
         drop_old: bool = False,
+        with_scalar_labels: bool = False,
         **kwargs,
     ):
         self.db_config = db_config
         self.case_config = db_case_config
         self.collection_name = collection_name
         self.dim = dim
+        self.with_scalar_labels = with_scalar_labels
+        self._filter_query: dict[str, Any] | None = None
 
         # Antfly v0.1 used /api/v1; current antfly-zig serves the public DB API
         # at /db/v1. Auto-detect unless ANTFLY_API_ROOT pins it explicitly.
@@ -462,12 +472,15 @@ class Antfly(VectorDB):
         return self._pack_vector(vector)
 
     def _metadata_query_body(self, query: list[float], k: int) -> dict[str, Any]:
-        return {
+        body = {
             "embeddings": {"vec": self._serialize_query_vector(query)},
             "limit": k,
             "fields": [],
             **self.case_config.search_param(),
         }
+        if getattr(self, "_filter_query", None) is not None:
+            body["filter_query"] = self._filter_query
+        return body
 
     def _store_query_body(self, query: list[float], k: int) -> dict[str, Any]:
         search_params = self.case_config.search_param()
@@ -533,6 +546,24 @@ class Antfly(VectorDB):
             self._wait_for_index_ready(client, expected_total=data_size)
             self._maybe_log_bench_status(client, "optimize_end", force=True)
 
+    def prepare_filter(self, filters: Filter):
+        if filters.type == FilterOp.NonFilter:
+            self._filter_query = None
+        elif filters.type == FilterOp.NumGE:
+            self._filter_query = {
+                "numeric_range": {
+                    "field": filters.int_field,
+                    "min": filters.int_value,
+                    "inclusive_min": True,
+                }
+            }
+        elif filters.type == FilterOp.StrEqual:
+            self._filter_query = {
+                "term": {filters.label_field: filters.label_value}
+            }
+        else:
+            raise ValueError(f"Unsupported Antfly filter: {filters}")
+
     def _catch_up_lag_sequences(self) -> int | None:
         try:
             payload = self._get_index_status(self.client)
@@ -564,6 +595,7 @@ class Antfly(VectorDB):
         self,
         embeddings: list[list[float]],
         metadata: list[int],
+        labels_data: list[str] | None = None,
         **kwargs: Any,
     ) -> tuple[int, Exception]:
         total = len(embeddings)
@@ -584,6 +616,10 @@ class Antfly(VectorDB):
                         SOURCE_FIELD: str(metadata[i]),
                         "_embeddings": {"vec": serialized_embedding},
                     }
+                    if self.with_scalar_labels:
+                        if labels_data is None:
+                            raise ValueError("Antfly label-filter load requires labels_data")
+                        inserts[key]["labels"] = labels_data[i]
                 payload = {"inserts": inserts, "sync_level": self._write_sync_level}
                 r = self.client.post(
                     f"/tables/{self.collection_name}/batch", json=payload
@@ -613,6 +649,8 @@ class Antfly(VectorDB):
             query = self._normalize_vector(query)
 
         if self._use_direct_store_search:
+            if self._filter_query is not None:
+                raise ValueError("Antfly filtered ANN requires the public metadata query API")
             if self._direct_shard_id is None:
                 self._refresh_direct_search_routing(self.client)
             r = self.store_client.post(

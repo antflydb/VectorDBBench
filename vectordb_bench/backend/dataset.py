@@ -5,6 +5,7 @@ Usage:
 """
 
 import logging
+import os
 import pathlib
 from enum import Enum
 from typing import Any, ClassVar, NamedTuple
@@ -374,6 +375,12 @@ class DatasetManager(BaseModel):
             if self.data.with_scalar_labels and self.data.scalar_labels_file_separated:
                 download_files.append(self.data.scalar_labels_file)
             download_files = [file for file in download_files if file is not None]
+            if (
+                os.environ.get("VDBB_USE_LOCAL_FILTER_GT") == "1"
+                and gt_file is not None
+                and self.data_dir.joinpath(gt_file).exists()
+            ):
+                download_files = [file for file in download_files if file != gt_file]
             source.reader().read(
                 dataset=self.data.dir_name.lower(),
                 files=download_files,

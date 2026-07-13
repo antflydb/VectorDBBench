@@ -50,7 +50,7 @@ class ElasticCloud(VectorDB):
 
         from elasticsearch import Elasticsearch
 
-        client = Elasticsearch(**self.db_config)
+        client = Elasticsearch(**self.db_config, request_timeout=180)
 
         if drop_old:
             log.info(f"Elasticsearch client drop_old indices: {self.indice}")
@@ -154,7 +154,7 @@ class ElasticCloud(VectorDB):
         if filters.type == FilterOp.NonFilter:
             self.filter = []
         elif filters.type == FilterOp.NumGE:
-            self.filter = {"range": {self.id_col_name: {"gt": filters.int_value}}}
+            self.filter = {"range": {self.id_col_name: {"gte": filters.int_value}}}
         elif filters.type == FilterOp.StrEqual:
             self.filter = {"term": {self.label_col_name: filters.label_value}}
             if self.case_config.use_routing:
