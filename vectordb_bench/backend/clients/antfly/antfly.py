@@ -129,12 +129,22 @@ class Antfly(VectorDB):
                 index_error = None
                 # Try each index type, with and without field, to handle
                 # both old binaries (require field) and new source (reject
-                # field with external). Order matters: legacy binaries accept
-                # the field-less variant at the metadata layer but shard-level
-                # registration then fails forever ("field or template must be
-                # specified"), so on the legacy API try the field variant first.
+                # field with external).
+                #
+                # On the legacy API a 2xx here is not proof of success: both
+                # variants can be accepted by the metadata layer and then
+                # rejected by shard-level registration, in which case the
+                # reconciler retries the bad config forever and every vector
+                # write fails with "index not found". The two known legacy
+                # behaviours are opposites -- some builds require the field
+                # ("field or template must be specified"), v0.1.3 rejects it
+                # ("external embeddings index config cannot specify field or
+                # template") -- so ordering alone cannot be right. Instead:
+                # try field-less first, then with-field, and after each 2xx
+                # poll the index status until every shard reports a non-null
+                # registration; delete and move on if it stays broken.
                 if api_root == "/api/v1":
-                    field_variants = ({"field": SOURCE_FIELD}, {})
+                    field_variants = ({}, {"field": SOURCE_FIELD})
                 else:
                     field_variants = ({}, {"field": SOURCE_FIELD})
                 for index_type in INDEX_TYPES:
@@ -146,9 +156,20 @@ class Antfly(VectorDB):
                         log.info(
                             f"Add embeddings index response ({index_type}, field={'field' in extra}): {r.status_code}"
                         )
-                        if r.is_success:
+                        if not r.is_success:
+                            index_error = r
+                            continue
+                        if api_root != "/api/v1" or self._wait_for_index_registration(client):
                             index_error = None
                             break
+                        log.warning(
+                            f"Index ({index_type}, field={'field' in extra}) was accepted by "
+                            "the metadata layer but never registered on the shard; "
+                            "deleting it and trying the next variant"
+                        )
+                        client.delete(
+                            f"/tables/{self.collection_name}/indexes/{INDEX_NAME}"
+                        )
                         index_error = r
                     if index_error is None:
                         break
@@ -215,6 +236,24 @@ class Antfly(VectorDB):
             return None
         r.raise_for_status()
         return r.json()
+
+    def _wait_for_index_registration(self, client: httpx.Client) -> bool:
+        """True once every shard reports a non-null registration for the index.
+
+        Legacy binaries accept external-index configs at the metadata layer
+        and then fail to register them on the shard; while that is unresolved
+        the status endpoint reports null shard entries. Give the reconciler a
+        bounded window to register (or visibly fail) before the caller deletes
+        the index and tries the next variant.
+        """
+        deadline = time.monotonic() + 8 * TABLE_READY_POLL_INTERVAL
+        while time.monotonic() < deadline:
+            status = self._get_index_status(client)
+            shards = (status or {}).get("shard_status") or {}
+            if shards and all(isinstance(entry, dict) for entry in shards.values()):
+                return True
+            time.sleep(TABLE_READY_POLL_INTERVAL)
+        return False
 
     def _get_table_status(self, client: httpx.Client) -> dict:
         r = client.get(f"/tables/{self.collection_name}")
