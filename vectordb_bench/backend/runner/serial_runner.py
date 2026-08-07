@@ -150,6 +150,7 @@ class SerialInsertRunner:
     @utils.time_it
     def _insert_all_batches(self) -> int:
         """Performance case only"""
+
         def stop_worker_processes():
             processes = list((executor._processes or {}).keys())
             executor.shutdown(wait=False, cancel_futures=True)

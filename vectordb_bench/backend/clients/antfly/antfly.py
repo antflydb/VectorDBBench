@@ -76,14 +76,10 @@ class Antfly(VectorDB):
         # at /db/v1. Auto-detect unless ANTFLY_API_ROOT pins it explicitly.
         api_root = os.environ.get("ANTFLY_API_ROOT", "").rstrip("/")
         if not api_root:
-            api_root = _detect_api_root(
-                _httpx_host(db_config["host"]), db_config["port"]
-            )
+            api_root = _detect_api_root(_httpx_host(db_config["host"]), db_config["port"])
             log.info(f"Detected Antfly API root: {api_root}")
         self._legacy_api = api_root == "/api/v1"
-        self._metadata_base_url = (
-            f"http://{_httpx_host(db_config['host'])}:{db_config['port']}{api_root}"
-        )
+        self._metadata_base_url = f"http://{_httpx_host(db_config['host'])}:{db_config['port']}{api_root}"
         self._store_host = _httpx_host(db_config.get("store_host") or db_config["host"])
         self._store_port = db_config.get("store_port")
         self._use_direct_store_search = bool(db_config.get("use_direct_store_search"))
@@ -93,9 +89,7 @@ class Antfly(VectorDB):
         num_shards = db_config.get("num_shards", 1)
 
         if self._use_direct_store_search and not self._store_port:
-            raise ValueError(
-                "Antfly direct store search requires store_port to be configured"
-            )
+            raise ValueError("Antfly direct store search requires store_port to be configured")
 
         client = _make_client(self._metadata_base_url, 60)
         try:
@@ -105,9 +99,7 @@ class Antfly(VectorDB):
 
             table = self._get_table_status_or_none(client)
             if table is None:
-                r = client.post(
-                    f"/tables/{self.collection_name}", json={"num_shards": num_shards}
-                )
+                r = client.post(f"/tables/{self.collection_name}", json={"num_shards": num_shards})
                 log.info(f"Create table response: {r.status_code}")
                 r.raise_for_status()
             else:
@@ -119,43 +111,7 @@ class Antfly(VectorDB):
             # while the shard is still initializing.
             self._wait_for_write_ready(client)
 
-            if self._get_index_status(client) is None:
-                index_def = {
-                    "name": INDEX_NAME,
-                    "dimension": dim,
-                    "external": True,
-                    **self.case_config.index_param(),
-                }
-                index_error = None
-                # Try each index type, with and without field, to handle
-                # both old binaries (require field) and new source (reject
-                # field with external). Order matters: legacy binaries accept
-                # the field-less variant at the metadata layer but shard-level
-                # registration then fails forever ("field or template must be
-                # specified"), so on the legacy API try the field variant first.
-                if api_root == "/api/v1":
-                    field_variants = ({"field": SOURCE_FIELD}, {})
-                else:
-                    field_variants = ({}, {"field": SOURCE_FIELD})
-                for index_type in INDEX_TYPES:
-                    for extra in field_variants:
-                        r = client.post(
-                            f"/tables/{self.collection_name}/indexes/{INDEX_NAME}",
-                            json={"type": index_type, **index_def, **extra},
-                        )
-                        log.info(
-                            f"Add embeddings index response ({index_type}, field={'field' in extra}): {r.status_code}"
-                        )
-                        if r.is_success:
-                            index_error = None
-                            break
-                        index_error = r
-                    if index_error is None:
-                        break
-                if index_error is not None:
-                    index_error.raise_for_status()
-            else:
-                log.info("Reusing existing embeddings index: %s", INDEX_NAME)
+            self._ensure_external_index(client, dim)
             # Do not wait for an empty external index to finish rebuilding here.
             # antfly-zig keeps an empty external dense index in backfill state
             # until writes arrive, and optimize(data_size=...) performs the
@@ -163,6 +119,60 @@ class Antfly(VectorDB):
             self._refresh_direct_search_routing(client)
         finally:
             client.close()
+
+    def _ensure_external_index(self, client: httpx.Client, dim: int) -> None:
+        """Create the external embeddings index, verifying shard registration.
+
+        Tries each index type, with and without an explicit source field, to
+        handle both old binaries (require field) and new source (reject field
+        with external).
+
+        On the legacy API a 2xx from the create call is not proof of success:
+        either variant can be accepted by the metadata layer and then rejected
+        by shard-level registration, in which case the reconciler retries the
+        bad config forever and every vector write fails with "index not
+        found". The two known legacy behaviours are opposites -- some builds
+        require the field ("field or template must be specified"), v0.1.3
+        rejects it ("external embeddings index config cannot specify field or
+        template") -- so ordering alone cannot be right. Instead, after each
+        2xx poll the index status until every shard reports a non-null
+        registration; delete and move on if it stays broken.
+        """
+        if self._get_index_status(client) is not None:
+            log.info("Reusing existing embeddings index: %s", INDEX_NAME)
+            return
+        index_def = {
+            "name": INDEX_NAME,
+            "dimension": dim,
+            "external": True,
+            **self.case_config.index_param(),
+        }
+        field_variants = ({}, {"field": SOURCE_FIELD})
+        index_error = None
+        for index_type in INDEX_TYPES:
+            for extra in field_variants:
+                r = client.post(
+                    f"/tables/{self.collection_name}/indexes/{INDEX_NAME}",
+                    json={"type": index_type, **index_def, **extra},
+                )
+                log.info(f"Add embeddings index response ({index_type}, field={'field' in extra}): {r.status_code}")
+                if not r.is_success:
+                    index_error = r
+                    continue
+                if not self._legacy_api or self._wait_for_index_registration(client):
+                    index_error = None
+                    break
+                log.warning(
+                    f"Index ({index_type}, field={'field' in extra}) was accepted by "
+                    "the metadata layer but never registered on the shard; "
+                    "deleting it and trying the next variant"
+                )
+                client.delete(f"/tables/{self.collection_name}/indexes/{INDEX_NAME}")
+                index_error = r
+            if index_error is None:
+                break
+        if index_error is not None:
+            index_error.raise_for_status()
 
     def _wait_for_shard_ready(self, client: httpx.Client):
         deadline = time.monotonic() + TABLE_READY_TIMEOUT
@@ -175,9 +185,7 @@ class Antfly(VectorDB):
             except Exception as exc:
                 log.debug("Shard readiness probe failed", exc_info=exc)
             time.sleep(TABLE_READY_POLL_INTERVAL)
-        log.warning(
-            f"Shard readiness timeout after {TABLE_READY_TIMEOUT}s, proceeding anyway"
-        )
+        log.warning(f"Shard readiness timeout after {TABLE_READY_TIMEOUT}s, proceeding anyway")
 
     def _wait_for_write_ready(self, client: httpx.Client):
         # Table metadata appearing does not mean shards accept writes yet:
@@ -205,9 +213,7 @@ class Antfly(VectorDB):
             except Exception as exc:
                 last_error = str(exc)
             time.sleep(TABLE_READY_POLL_INTERVAL)
-        log.warning(
-            f"Write readiness timeout after {TABLE_READY_TIMEOUT}s ({last_error}), proceeding anyway"
-        )
+        log.warning(f"Write readiness timeout after {TABLE_READY_TIMEOUT}s ({last_error}), proceeding anyway")
 
     def _get_index_status(self, client: httpx.Client) -> dict | None:
         r = client.get(f"/tables/{self.collection_name}/indexes/{INDEX_NAME}")
@@ -215,6 +221,24 @@ class Antfly(VectorDB):
             return None
         r.raise_for_status()
         return r.json()
+
+    def _wait_for_index_registration(self, client: httpx.Client) -> bool:
+        """True once every shard reports a non-null registration for the index.
+
+        Legacy binaries accept external-index configs at the metadata layer
+        and then fail to register them on the shard; while that is unresolved
+        the status endpoint reports null shard entries. Give the reconciler a
+        bounded window to register (or visibly fail) before the caller deletes
+        the index and tries the next variant.
+        """
+        deadline = time.monotonic() + 8 * TABLE_READY_POLL_INTERVAL
+        while time.monotonic() < deadline:
+            status = self._get_index_status(client)
+            shards = (status or {}).get("shard_status") or {}
+            if shards and all(isinstance(entry, dict) for entry in shards.values()):
+                return True
+            time.sleep(TABLE_READY_POLL_INTERVAL)
+        return False
 
     def _get_table_status(self, client: httpx.Client) -> dict:
         r = client.get(f"/tables/{self.collection_name}")
@@ -352,9 +376,7 @@ class Antfly(VectorDB):
             return False
         return expected_total is None or total_indexed >= expected_total
 
-    def _wait_for_index_ready(
-        self, client: httpx.Client, expected_total: int | None = None
-    ):
+    def _wait_for_index_ready(self, client: httpx.Client, expected_total: int | None = None):
         deadline = time.monotonic() + INDEX_READY_TIMEOUT
         last_status = None
 
@@ -399,9 +421,7 @@ class Antfly(VectorDB):
     @property
     def _store_base_url(self) -> str:
         if self._store_port is None:
-            raise ValueError(
-                "Antfly store_base_url requested without store_port configured"
-            )
+            raise ValueError("Antfly store_base_url requested without store_port configured")
         return f"http://{self._store_host}:{self._store_port}"
 
     def need_normalize_cosine(self) -> bool:
@@ -489,14 +509,10 @@ class Antfly(VectorDB):
     def ready_to_search(self) -> bool:
         if getattr(self, "client", None) is not None:
             payload = self._get_index_status(self.client)
-            return self._index_status_is_ready(
-                payload, payload.get("status") if payload else None
-            )
+            return self._index_status_is_ready(payload, payload.get("status") if payload else None)
         with _make_client(self._metadata_base_url, 120) as client:
             payload = self._get_index_status(client)
-            return self._index_status_is_ready(
-                payload, payload.get("status") if payload else None
-            )
+            return self._index_status_is_ready(payload, payload.get("status") if payload else None)
 
     def optimize(self, data_size: int | None = None):
         if getattr(self, "client", None) is not None:
@@ -534,9 +550,7 @@ class Antfly(VectorDB):
                         "_embeddings": {"vec": serialized_embedding},
                     }
                 payload = {"inserts": inserts, "sync_level": "write"}
-                r = self.client.post(
-                    f"/tables/{self.collection_name}/batch", json=payload
-                )
+                r = self.client.post(f"/tables/{self.collection_name}/batch", json=payload)
                 r.raise_for_status()
                 self._maybe_log_bench_status(self.client, "insert")
         except Exception as e:
