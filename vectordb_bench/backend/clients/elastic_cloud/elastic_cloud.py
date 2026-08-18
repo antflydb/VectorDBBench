@@ -217,18 +217,19 @@ class ElasticCloud(VectorDB):
 
     def prepare_filter(self, filters: Filter):
         self.routing_key = None
+        is_fts = getattr(self, "_is_fts", False)
         if filters.type == FilterOp.NonFilter:
-            self.filter = None if self._is_fts else []
+            self.filter = None if is_fts else []
         elif filters.type == FilterOp.NumGE:
-            if self._is_fts:
+            if is_fts:
                 if getattr(filters, "int_field", None) != self.filter_id_col_name:
                     msg = f"ElasticCloud FTS filters only support int_field='{self.filter_id_col_name}'"
                     raise ValueError(msg)
                 self.filter = {"range": {self.filter_id_col_name: {"gte": filters.int_value}}}
             else:
-                self.filter = {"range": {self.id_col_name: {"gt": filters.int_value}}}
+                self.filter = {"range": {self.id_col_name: {"gte": filters.int_value}}}
         elif filters.type == FilterOp.StrEqual:
-            if self._is_fts:
+            if is_fts:
                 msg = f"Not support Filter for ElasticCloud FTS - {filters}"
                 raise ValueError(msg)
             self.filter = {"term": {self.label_col_name: filters.label_value}}

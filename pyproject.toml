@@ -55,8 +55,8 @@ test = [
 restful         = [ "flask" ]
 qdrant          = [ "qdrant-client" ]
 pinecone        = [ "pinecone" ]
-weaviate        = [ "weaviate-client" ]
-elastic         = [ "elasticsearch" ]
+weaviate        = [ "weaviate-client>=3.26.7,<4" ]
+elastic         = [ "elasticsearch>=8,<9" ]
 # For elastic and aliyun_elasticsearch
 
 pgvector        = [ "psycopg", "psycopg-binary", "pgvector" ]
@@ -87,6 +87,7 @@ seekdb          = [ "mysql-connector-python" ]
 volc_mysql      = [ "mysql-connector-python" ]
 pinot           = [ "requests" ]
 adbpg           = [ "psycopg", "psycopg-binary", "pgvector" ]
+antfly          = [ "httpx" ]
 
 [project.urls]
 Repository  = "https://github.com/zilliztech/VectorDBBench"

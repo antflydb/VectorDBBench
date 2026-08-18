@@ -49,7 +49,10 @@ def QdrantLocal(**parameters: Unpack[QdrantLocalTypedDict]):
 
     run(
         db=DBTYPE,
-        db_config=QdrantLocalConfig(url=SecretStr(parameters["url"])),
+        db_config=QdrantLocalConfig(
+            db_label=parameters["db_label"],
+            url=SecretStr(parameters["url"]),
+        ),
         db_case_config=QdrantLocalIndexConfig(
             on_disk=parameters["on_disk"],
             m=parameters["m"],

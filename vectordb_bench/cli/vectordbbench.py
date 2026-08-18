@@ -1,6 +1,7 @@
 from ..backend.clients.adbpg.cli import AdbpgNova
 from ..backend.clients.alisql.cli import AliSQLHNSW
 from ..backend.clients.alloydb.cli import AlloyDBScaNN
+from ..backend.clients.antfly.cli import AntflyAKNN
 from ..backend.clients.aws_opensearch.cli import AWSOpenSearch
 from ..backend.clients.chroma.cli import Chroma
 from ..backend.clients.clickhouse.cli import Clickhouse
@@ -113,6 +114,7 @@ cli.add_command(PolarDBHNSWPQ)
 cli.add_command(PolarDBHNSWSQ)
 cli.add_command(SeekDBHNSW)
 cli.add_command(VolcMySQLHNSW)
+cli.add_command(AntflyAKNN)
 
 
 if __name__ == "__main__":
