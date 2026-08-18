@@ -59,6 +59,12 @@ class DB(Enum):
     Zvec = "Zvec"
     Endee = "Endee"
     Lindorm = "Lindorm"
+    VectorChord = "VectorChord"
+    PolarDB = "PolarDB"
+    Pinot = "Pinot"
+    SeekDB = "SeekDB"
+    VolcMySQL = "VolcMySQL"
+    Adbpg = "AnalyticDB for PostgreSQL"
     Antfly = "Antfly"
 
     @property
@@ -246,6 +252,35 @@ class DB(Enum):
             from .lindorm.lindorm_search import LindormVector
 
             return LindormVector
+
+        if self == DB.VectorChord:
+            from .vectorchord.vectorchord import VectorChord
+
+            return VectorChord
+        if self == DB.PolarDB:
+            from .polardb.polardb import PolarDB
+
+            return PolarDB
+
+        if self == DB.Pinot:
+            from .pinot.pinot import Pinot
+
+            return Pinot
+
+        if self == DB.SeekDB:
+            from .seekdb.seekdb import SeekDB
+
+            return SeekDB
+
+        if self == DB.VolcMySQL:
+            from .volc_mysql.volc_mysql import VolcMySQL
+
+            return VolcMySQL
+
+        if self == DB.Adbpg:
+            from .adbpg.adbpg import Adbpg
+
+            return Adbpg
 
         if self == DB.Antfly:
             from .antfly.antfly import Antfly
@@ -441,6 +476,35 @@ class DB(Enum):
 
             return LindormConfig
 
+        if self == DB.VectorChord:
+            from .vectorchord.config import VectorChordConfig
+
+            return VectorChordConfig
+        if self == DB.PolarDB:
+            from .polardb.config import PolarDBConfig
+
+            return PolarDBConfig
+
+        if self == DB.Pinot:
+            from .pinot.config import PinotConfig
+
+            return PinotConfig
+
+        if self == DB.SeekDB:
+            from .seekdb.config import SeekDBConfig
+
+            return SeekDBConfig
+
+        if self == DB.VolcMySQL:
+            from .volc_mysql.config import VolcMySQLConfig
+
+            return VolcMySQLConfig
+
+        if self == DB.Adbpg:
+            from .adbpg.config import AdbpgConfig
+
+            return AdbpgConfig
+
         if self == DB.Antfly:
             from .antfly.config import AntflyConfig
 
@@ -459,11 +523,19 @@ class DB(Enum):
             return _milvus_case_config.get(index_type)
 
         if self == DB.ZillizCloud:
+            if index_type == IndexType.FTS:
+                from .zilliz_cloud.config import ZillizCloudFtsConfig
+
+                return ZillizCloudFtsConfig
             from .zilliz_cloud.config import AutoIndexConfig
 
             return AutoIndexConfig
 
         if self == DB.ElasticCloud:
+            if index_type == IndexType.FTS:
+                from .elastic_cloud.config import ElasticCloudFtsConfig
+
+                return ElasticCloudFtsConfig
             from .elastic_cloud.config import ElasticCloudIndexConfig
 
             return ElasticCloudIndexConfig
@@ -499,6 +571,10 @@ class DB(Enum):
             return AWSOpenSearchIndexConfig
 
         if self == DB.OSSOpenSearch:
+            if index_type == IndexType.FTS:
+                from .oss_opensearch.config import OSSOpenSearchFtsConfig
+
+                return OSSOpenSearchFtsConfig
             from .oss_opensearch.config import OSSOpenSearchIndexConfig
 
             return OSSOpenSearchIndexConfig
@@ -559,6 +635,10 @@ class DB(Enum):
             return _cockroachdb_case_config.get(index_type)
 
         if self == DB.Vespa:
+            if index_type == IndexType.FTS:
+                from .vespa.config import VespaFtsConfig
+
+                return VespaFtsConfig
             from .vespa.config import VespaHNSWConfig
 
             return VespaHNSWConfig
@@ -592,12 +672,21 @@ class DB(Enum):
 
             return AliSQLIndexConfig
 
+        if self == DB.PolarDB:
+            from .polardb.config import _polardb_case_config
+
+            return _polardb_case_config.get(index_type)
+
         if self == DB.Doris:
             from .doris.config import DorisCaseConfig
 
             return DorisCaseConfig
 
         if self == DB.TurboPuffer:
+            if index_type == IndexType.FTS:
+                from .turbopuffer.config import TurboPufferFtsConfig
+
+                return TurboPufferFtsConfig
             from .turbopuffer.config import TurboPufferIndexConfig
 
             return TurboPufferIndexConfig
@@ -611,6 +700,35 @@ class DB(Enum):
             from .lindorm.config import _lindorm_vector_case_config
 
             return _lindorm_vector_case_config.get(index_type)
+
+        if self == DB.VectorChord:
+            from .vectorchord.config import _vectorchord_case_config
+
+            return _vectorchord_case_config.get(index_type)
+
+        if self == DB.Pinot:
+            from .pinot.config import PinotHNSWConfig, PinotIVFFlatConfig, PinotIVFPQConfig
+
+            return {
+                IndexType.HNSW: PinotHNSWConfig,
+                IndexType.IVFFlat: PinotIVFFlatConfig,
+                IndexType.IVFPQ: PinotIVFPQConfig,
+            }.get(index_type, PinotHNSWConfig)
+
+        if self == DB.SeekDB:
+            from .seekdb.config import _seekdb_case_config
+
+            return _seekdb_case_config.get(index_type)
+
+        if self == DB.VolcMySQL:
+            from .volc_mysql.config import _volcmysql_case_config
+
+            return _volcmysql_case_config.get(index_type)
+
+        if self == DB.Adbpg:
+            from .adbpg.config import AdbpgIndexConfig
+
+            return AdbpgIndexConfig
 
         if self == DB.Antfly:
             from .antfly.config import AntflyIndexConfig

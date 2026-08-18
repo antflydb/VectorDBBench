@@ -1,5 +1,4 @@
 import logging
-from typing import Any
 
 from pydantic import BaseModel, SecretStr, model_validator
 
@@ -20,8 +19,8 @@ class DorisConfig(DBConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def not_empty_field(cls, data: Any) -> Any:
-        return data  # allow all fields including empty strings
+    def not_empty_field(cls, data: any) -> any:
+        return data
 
     def to_dict(self) -> dict:
         pwd_str = self.password.get_secret_value()

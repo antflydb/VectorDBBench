@@ -1,7 +1,6 @@
 import base64
 import json
 import logging
-import math
 import os
 import struct
 import time
@@ -10,7 +9,9 @@ from typing import Any
 
 import httpx
 
-from ..api import DBCaseConfig, MetricType, VectorDB
+from ...filter import Filter, FilterOp
+from ...payload import PayloadProfile
+from ..api import DBCaseConfig, VectorDB
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,12 @@ def _pack_dense_f32(values: list[float]) -> str:
 
 
 def _make_client(base_url: str, timeout: float) -> httpx.Client:
+    raw_timeout = os.environ.get("ANTFLY_VDBBENCH_HTTP_TIMEOUT")
+    if raw_timeout:
+        try:
+            timeout = float(raw_timeout)
+        except ValueError:
+            log.warning("Ignoring invalid ANTFLY_VDBBENCH_HTTP_TIMEOUT=%r", raw_timeout)
     return httpx.Client(
         base_url=base_url,
         timeout=timeout,
@@ -58,6 +65,12 @@ def _detect_api_root(host: str, port: int) -> str:
 
 
 class Antfly(VectorDB):
+    supported_filter_types: list[FilterOp] = [
+        FilterOp.NonFilter,
+        FilterOp.NumGE,
+        FilterOp.StrEqual,
+    ]
+
     def __init__(
         self,
         dim: int,
@@ -65,12 +78,15 @@ class Antfly(VectorDB):
         db_case_config: DBCaseConfig,
         collection_name: str = "vdbbench",
         drop_old: bool = False,
+        with_scalar_labels: bool = False,
         **kwargs,
     ):
         self.db_config = db_config
         self.case_config = db_case_config
         self.collection_name = collection_name
         self.dim = dim
+        self.with_scalar_labels = with_scalar_labels
+        self._filter_query: dict[str, Any] | None = None
 
         # Antfly v0.1 used /api/v1; current antfly-zig serves the public DB API
         # at /db/v1. Auto-detect unless ANTFLY_API_ROOT pins it explicitly.
@@ -84,6 +100,7 @@ class Antfly(VectorDB):
         self._store_port = db_config.get("store_port")
         self._use_direct_store_search = bool(db_config.get("use_direct_store_search"))
         self._pack_query_vectors = bool(db_config.get("pack_query_vectors"))
+        self._write_sync_level = os.environ.get("ANTFLY_VDBBENCH_SYNC_LEVEL", "write")
         self._direct_shard_id: str | None = None
         self._bench_status_last_log = 0.0
         num_shards = db_config.get("num_shards", 1)
@@ -192,7 +209,10 @@ class Antfly(VectorDB):
         # legacy (Go) binaries return 500 "shard is still initializing" for a
         # few seconds after table creation. Probe with a throwaway document
         # (no embedding, so it never lands in the vector index) until a batch
-        # write succeeds, then delete it.
+        # write succeeds. The probe doc is intentionally left in place: deleting
+        # it would leave a tombstone, and a table that has ever deleted a doc
+        # loses the "all docs visible" fast path. Every dense query would then
+        # materialize the complete live-doc set as a positive filter.
         probe_key = "key:__circus_write_probe__"
         deadline = time.monotonic() + TABLE_READY_TIMEOUT
         last_error = None
@@ -203,10 +223,6 @@ class Antfly(VectorDB):
                     json={"inserts": {probe_key: {"id": -1}}, "sync_level": "write"},
                 )
                 if r.is_success:
-                    client.post(
-                        f"/tables/{self.collection_name}/batch",
-                        json={"deletes": [probe_key], "sync_level": "write"},
-                    )
                     log.info("Write path is ready")
                     return
                 last_error = f"{r.status_code}: {r.text[:120]}"
@@ -425,20 +441,9 @@ class Antfly(VectorDB):
         return f"http://{self._store_host}:{self._store_port}"
 
     def need_normalize_cosine(self) -> bool:
-        return True
-
-    def _uses_cosine_distance(self) -> bool:
-        try:
-            return self.case_config.index_param().get("distance_metric") == "cosine"
-        except Exception:
-            return getattr(self.case_config, "metric_type", None) == MetricType.COSINE
-
-    @staticmethod
-    def _normalize_vector(vector: list[float]) -> list[float]:
-        norm = math.sqrt(sum(value * value for value in vector))
-        if norm == 0:
-            return vector
-        return [value / norm for value in vector]
+        # Antfly computes cosine norms natively. Returning True would make the
+        # shared runner normalize every vector before the adapter sees it.
+        return False
 
     @staticmethod
     def _pack_vector(vector: list[float]) -> str:
@@ -459,11 +464,15 @@ class Antfly(VectorDB):
         return self._pack_vector(vector)
 
     def _metadata_query_body(self, query: list[float], k: int) -> dict[str, Any]:
-        return {
+        body = {
             "embeddings": {"vec": self._serialize_query_vector(query)},
             "limit": k,
+            "fields": [],
             **self.case_config.search_param(),
         }
+        if getattr(self, "_filter_query", None) is not None:
+            body["filter_query"] = self._filter_query
+        return body
 
     def _store_query_body(self, query: list[float], k: int) -> dict[str, Any]:
         search_params = self.case_config.search_param()
@@ -525,31 +534,49 @@ class Antfly(VectorDB):
             self._wait_for_index_ready(client, expected_total=data_size)
             self._maybe_log_bench_status(client, "optimize_end", force=True)
 
+    def prepare_filter(self, filters: Filter):
+        if filters.type == FilterOp.NonFilter:
+            self._filter_query = None
+        elif filters.type == FilterOp.NumGE:
+            self._filter_query = {
+                "numeric_range": {
+                    "field": filters.int_field,
+                    "min": filters.int_value,
+                    "inclusive_min": True,
+                }
+            }
+        elif filters.type == FilterOp.StrEqual:
+            self._filter_query = {"term": {filters.label_field: filters.label_value}}
+        else:
+            msg = f"Unsupported Antfly filter: {filters}"
+            raise ValueError(msg)
+
     def insert_embeddings(
         self,
         embeddings: list[list[float]],
         metadata: list[int],
+        labels_data: list[str] | None = None,
         **kwargs: Any,
     ) -> tuple[int, Exception]:
         total = len(embeddings)
+        if self.with_scalar_labels and labels_data is None:
+            return 0, ValueError("Antfly label-filter load requires labels_data")
         try:
-            use_cosine = self._uses_cosine_distance()
             for start in range(0, total, BATCH_CHUNK_SIZE):
                 end = min(start + BATCH_CHUNK_SIZE, total)
                 inserts = {}
                 for i in range(start, end):
                     key = f"key:{metadata[i]}"
-                    embedding = embeddings[i]
-                    if use_cosine:
-                        embedding = self._normalize_vector(embedding)
-                    serialized_embedding = self._serialize_insert_vector(embedding)
+                    serialized_embedding = self._serialize_insert_vector(embeddings[i])
                     inserts[key] = {
                         "id": metadata[i],
                         "metadata": metadata[i],
                         SOURCE_FIELD: str(metadata[i]),
                         "_embeddings": {"vec": serialized_embedding},
                     }
-                payload = {"inserts": inserts, "sync_level": "write"}
+                    if self.with_scalar_labels:
+                        inserts[key]["labels"] = labels_data[i]
+                payload = {"inserts": inserts, "sync_level": self._write_sync_level}
                 r = self.client.post(f"/tables/{self.collection_name}/batch", json=payload)
                 r.raise_for_status()
                 self._maybe_log_bench_status(self.client, "insert")
@@ -562,12 +589,16 @@ class Antfly(VectorDB):
         self,
         query: list[float],
         k: int = 100,
+        payload_profile: PayloadProfile = PayloadProfile.IDS_ONLY,
         filters: dict | None = None,
         timeout: int | None = None,
         **kwargs: Any,
     ) -> list[int]:
-        if self._uses_cosine_distance():
-            query = self._normalize_vector(query)
+        if payload_profile != PayloadProfile.IDS_ONLY:
+            msg = f"Antfly VDBBench adapter only supports payload_profile={PayloadProfile.IDS_ONLY.value}"
+            raise NotImplementedError(msg)
+        if self._use_direct_store_search and self._filter_query is not None:
+            raise ValueError("Antfly filtered ANN requires the public metadata query API")
 
         if self._use_direct_store_search:
             if self._direct_shard_id is None:

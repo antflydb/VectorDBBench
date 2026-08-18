@@ -7,12 +7,20 @@ from contextlib import contextmanager
 import weaviate
 from weaviate.exceptions import WeaviateBaseError
 
+from vectordb_bench.backend.filter import Filter, FilterOp
+
 from ..api import DBCaseConfig, VectorDB
 
 log = logging.getLogger(__name__)
 
 
 class WeaviateCloud(VectorDB):
+    thread_safe: bool = False
+    supported_filter_types: list[FilterOp] = [
+        FilterOp.NonFilter,
+        FilterOp.NumGE,
+    ]
+
     def __init__(
         self,
         dim: int,
@@ -23,6 +31,7 @@ class WeaviateCloud(VectorDB):
         **kwargs,
     ):
         """Initialize wrapper around the weaviate vector database."""
+        self.name = "WeaviateCloud"
         db_config.update(
             {
                 "auth_client_secret": weaviate.AuthApiKey(
@@ -37,6 +46,7 @@ class WeaviateCloud(VectorDB):
         self._scalar_field = "key"
         self._vector_field = "vector"
         self._index_name = "vector_idx"
+        self._where_filter: dict | None = None
 
         # If local setup is used, we
         if db_config["no_auth"]:
@@ -145,16 +155,24 @@ class WeaviateCloud(VectorDB):
             .with_near_vector({"vector": query})
             .with_limit(k)
         )
-        if filters:
-            where_filter = {
-                "path": "key",
-                "operator": "GreaterThanEqual",
-                "valueInt": filters.get("id"),
-            }
-            query_obj = query_obj.with_where(where_filter)
+        if self._where_filter is not None:
+            query_obj = query_obj.with_where(self._where_filter)
 
         # Perform the search.
         res = query_obj.do()
 
         # Organize results.
         return [result[self._scalar_field] for result in res["data"]["Get"][self.collection_name]]
+
+    def prepare_filter(self, filters: Filter):
+        if filters.type == FilterOp.NonFilter:
+            self._where_filter = None
+        elif filters.type == FilterOp.NumGE:
+            self._where_filter = {
+                "path": [self._scalar_field],
+                "operator": "GreaterThanEqual",
+                "valueInt": filters.int_value,
+            }
+        else:
+            msg = f"Unsupported Weaviate filter: {filters}"
+            raise ValueError(msg)

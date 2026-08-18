@@ -24,11 +24,21 @@ class Metric:
     serial_latency_p95: float = 0.0
     recall: float = 0.0
     ndcg: float = 0.0
+    mrr: float = 0.0
     conc_num_list: list[int] = field(default_factory=list)
     conc_qps_list: list[float] = field(default_factory=list)
     conc_latency_p99_list: list[float] = field(default_factory=list)
     conc_latency_p95_list: list[float] = field(default_factory=list)
     conc_latency_avg_list: list[float] = field(default_factory=list)
+    payload_profile: str = "ids_only"
+    payload_estimated_bytes_per_query: int = 0
+
+    inserted_count: int = 0
+    insert_rows_per_second: float = 0.0
+    insert_completion_seconds: float = 0.0
+    searchable_after_insert_seconds: float = 0.0
+    indexed_after_searchable_seconds: float = 0.0
+    additional_parameters: dict = field(default_factory=dict)
 
     # for streaming cases
     st_ideal_insert_duration: int = 0
@@ -109,4 +119,53 @@ def calc_ndcg(ground_truth: list[int], got: list[int], ideal_dcg: float) -> floa
         if got_id in ground_truth:
             idx = ground_truth.index(got_id)
             dcg += 1 / np.log2(idx + 2)
+    return dcg / ideal_dcg
+
+
+def _positive_fts_qrels(ground_truth: dict[str, int] | list[int] | list[str]) -> dict[str, int]:
+    if isinstance(ground_truth, dict):
+        return {str(doc_id): int(rel) for doc_id, rel in ground_truth.items() if int(rel) > 0}
+    return {str(doc_id): 1 for doc_id in ground_truth}
+
+
+def calc_recall_fts(k: int, ground_truth: dict[str, int] | list[int] | list[str], got: list[int] | list[str]) -> float:
+    gt = _positive_fts_qrels(ground_truth)
+    if not gt or k <= 0:
+        return 0.0
+    got_set = {str(doc_id) for doc_id in got[:k]}
+    return len(set(gt) & got_set) / len(gt)
+
+
+def calc_mrr_fts(k: int, ground_truth: dict[str, int] | list[int] | list[str], got: list[int] | list[str]) -> float:
+    gt = _positive_fts_qrels(ground_truth)
+    if not gt or k <= 0:
+        return 0.0
+    for rank, doc_id in enumerate(got[:k], start=1):
+        if str(doc_id) in gt:
+            return 1 / rank
+    return 0.0
+
+
+def calc_ndcg_fts(k: int, ground_truth: dict[str, int] | list[int] | list[str], got: list[int] | list[str]) -> float:
+    gt = _positive_fts_qrels(ground_truth)
+    if not gt or k <= 0:
+        return 0.0
+
+    dcg = 0.0
+    seen = set()
+    for rank, raw_doc_id in enumerate(got[:k], start=1):
+        doc_id = str(raw_doc_id)
+        if doc_id in seen:
+            continue
+        seen.add(doc_id)
+        rel = gt.get(doc_id, 0)
+        if rel > 0:
+            dcg += rel / np.log2(rank + 1)
+
+    ideal_dcg = 0.0
+    for rank, rel in enumerate(sorted(gt.values(), reverse=True)[:k], start=1):
+        ideal_dcg += rel / np.log2(rank + 1)
+
+    if ideal_dcg == 0:
+        return 0.0
     return dcg / ideal_dcg

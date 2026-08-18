@@ -16,6 +16,11 @@ Prepare to delve into the world of VDBBench, and let it guide you in uncovering 
 VDBBench is sponsored by Zilliz，the leading opensource vectorDB company behind Milvus. Choose smarter with VDBBench - start your free test on [zilliz cloud](https://zilliz.com/) today!
 
 **Leaderboard:** https://zilliz.com/benchmark
+
+## 🎈 Announcement 🎈
+
+**June 2026 update:** Full Text Search has landed in VectorDBBench. We now benchmark BM25-style retrieval across supported backends, starting with MS MARCO and HotpotQA datasets, payload profiles, recall, QPS, and load metrics ready to compare. See the [VectorDBBench Full Text Search Release Note](docs/release/2026-06-full-text-search.md) for the full rollout details and caveats.
+
 ## Quick Start
 ### Prerequirement
 ``` shell
@@ -27,11 +32,6 @@ python >= 3.11
 pip install vectordb-bench
 ```
 
-**Install all database clients**
-
-``` shell
-pip install 'vectordb-bench[all]'
-```
 **Install the specific database client**
 
 ```shell
@@ -42,12 +42,11 @@ All the database client supported
 | Optional database client | install command                             |
 |--------------------------|---------------------------------------------|
 | pymilvus, zilliz_cloud (*default*)     | `pip install vectordb-bench`                |
-| all (*clients requirements might be conflict with each other*) | `pip install vectordb-bench[all]`           |
 | qdrant                   | `pip install vectordb-bench[qdrant]`        |
 | pinecone                 | `pip install vectordb-bench[pinecone]`      |
 | weaviate                 | `pip install vectordb-bench[weaviate]`      |
 | elastic, aliyun_elasticsearch| `pip install vectordb-bench[elastic]`       |
-| pgvector, pgvectorscale, pgdiskann, alloydb | `pip install vectordb-bench[pgvector]`      |
+| pgvector, pgvectorscale, pgdiskann, alloydb, vectorchord | `pip install vectordb-bench[pgvector]`      |
 | pgvecto.rs               | `pip install vectordb-bench[pgvecto_rs]`    |
 | redis                    | `pip install vectordb-bench[redis]`         |
 | memorydb                 | `pip install vectordb-bench[memorydb]`      |
@@ -61,11 +60,14 @@ All the database client supported
 | oceanbase                | `pip install vectordb-bench[oceanbase]`     |
 | hologres                 | `pip install vectordb-bench[hologres]`      |
 | tencent_es               | `pip install vectordb-bench[tencent_es]`    |
-| alisql                   | `pip install 'vectordb-bench[alisql]'`      |
+| alisql                   | `pip install vectordb-bench[alisql]`      |
+| polardb                  | `pip install vectordb-bench[polardb]`       |
 | doris                    | `pip install vectordb-bench[doris]`         |
 | zvec                     | `pip install vectordb-bench[zvec]`          |
 | endee                    | `pip install vectordb-bench[endee]`         |
 | lindorm                  | `pip install vectordb-bench[lindorm]`       |
+| volc_mysql               | `pip install vectordb-bench[volc_mysql]`    |
+| adbpg                    | `pip install vectordb-bench[adbpg]`         |
 
 ### Run
 
@@ -91,10 +93,20 @@ Options:
 Commands:
   pgvectorhnsw
   pgvectorivfflat
+  vectorchordrq
+  volcmysqlhnsw
   test
   weaviate
 ```
 To list the options for each command, execute `vectordbbench [command] --help`
+
+Use `--note` or `--note-file` to preserve deployment, resource, client, network, and constraint context in each result JSON under `task_config.db_config.note`. The options are mutually exclusive. Prefer `--note-file` for structured or multiline context, and never include credentials, tokens, or sensitive connection details.
+
+```shell
+vectordbbench zillizautoindex \
+  --note-file ./run-context.json \
+  <other options>
+```
 
 ```text
 $ vectordbbench pgvectorhnsw --help
@@ -114,6 +126,9 @@ Options:
                                   Case type
   --db-label TEXT                 Db label, default: date in ISO format
                                   [default: 2024-05-20T20:26:31.113290]
+  --note TEXT                     Run context stored with each result
+                                  [default: ""]
+  --note-file FILE                Read run context from a UTF-8 text file
   --dry-run                       Print just the configuration and exit
                                   without running the tasks
   --k INTEGER                     K value for number of nearest neighbors to
@@ -184,6 +199,34 @@ Options:
   --help                          Show this message and exit.
 ```
 
+### Run VectorChord (vchordrq) from command line
+
+VectorChord is a PostgreSQL extension for scalable vector similarity search using IVF + RaBitQ indexing.
+It is fully compatible with pgvector data types and provides faster queries and index builds.
+
+```shell
+vectordbbench vectorchordrq \
+  --user-name postgres --password '<password>' \
+  --host localhost --port 5432 --db-name vectordb \
+  --case-type Performance1536D50K \
+  --lists 1000 --probes 10 --epsilon 1.9 \
+  --spherical-centroids --build-threads 8 \
+  --max-parallel-workers 15
+```
+
+Key VectorChord-specific options:
+| Option | Description |
+|--------|-------------|
+| `--lists` | Number of IVF lists for vchordrq index |
+| `--probes` | Number of probes during search (default: 10) |
+| `--epsilon` | Reranking precision factor, 0.0-4.0 (default: 1.9) |
+| `--residual-quantization` | Enable residual quantization |
+| `--spherical-centroids` | L2-normalize centroids (recommended for cosine/IP) |
+| `--build-threads` | Number of threads for index building (1-255) |
+| `--degree-of-parallelism` | Degree of parallelism for index build (1-256) |
+| `--max-parallel-workers` | Sets max_parallel_workers & max_parallel_maintenance_workers |
+| `--max-scan-tuples` | Max tuples to scan before stopping (-1 for unlimited) |
+
 ### Run awsopensearch from command line
 
 ```shell
@@ -225,12 +268,49 @@ Options:
 
   --ondisk                        Ondisk mode with binary quantization(32x compression)
   --oversample-factor             Controls the degree of oversampling applied to minority classes in imbalanced datasets to improve model performance by balancing class distributions.(default 1.0)
-  
 
   # Quantization Type
   --quantization-type TEXT        which type of quantization to use valid values [fp32, fp16, bq]
   --help                          Show this message and exit.
   ```
+
+### Run awsopensearch serverless from command line
+
+OpenSearch Serverless (AOSS) is a serverless deployment option for Amazon OpenSearch Service. VDBBench supports AOSS with the `--serverless` flag, which uses AWS SigV4 authentication and automatically skips unsupported operations (cluster settings, force merge, manual refresh, warmup API).
+
+**Prerequisites:**
+- AWS credentials configured (via `~/.aws/credentials`, environment variables, or IAM role)
+- Serverless dependencies installed (included in the `opensearch` extra): `pip install 'vectordb-bench[opensearch]'`. This installs `opensearch-py`, `boto3`, and `requests-aws4auth`.
+- IAM identity policy allowing `aoss:APIAccessAll` on the collection
+- AOSS Data Access Policy granting index/collection permissions to the IAM principal
+
+**Example: Run performance test on OpenSearch Serverless**
+
+```shell
+NUM_PER_BATCH=100 vectordbbench awsopensearch --db-label aoss \
+  --serverless --aws-region us-east-1 \
+  --host <collection-id>.aoss.us-east-1.on.aws --port 443 \
+  --case-type Performance768D1M \
+  --m 16 --ef-construction 200 --ef-search 40 \
+  --number-of-shards 8 --number-of-replicas 0 \
+  --engine faiss --metric-type cosine \
+  --num-concurrency 80,100,120
+```
+
+OpenSearch Serverless-specific options:
+
+| Option | Description |
+|--------|-------------|
+| `--serverless` | Enable OpenSearch Serverless mode (uses AWS SigV4 auth) |
+| `--aws-region` | AWS region for the AOSS collection (default: `us-east-1`) |
+| `NUM_PER_BATCH` | Number of vectors per Serverless bulk request (default: `100`) |
+
+> **Notes:**
+> - `--user` and `--password` are not needed for Serverless mode
+> - `--engine` is accepted but ignored internally (AOSS manages the engine)
+> - `--force-merge-enabled`, `--refresh-interval`, `--flush-threshold-size`, and `--cb-threshold` are ignored for Serverless
+> - Keep `NUM_PER_BATCH` small enough for the Serverless bulk API request limits
+
 ### Run Elastic Cloud from command line
 
 Elastic Cloud supports multiple index types: HNSW, HNSW_INT8, HNSW_INT4, and HNSW_BBQ.
@@ -294,13 +374,13 @@ Options:
   # Connection
   --cloud-id TEXT                 Elastic Cloud ID  [required]
   --password TEXT                 Elastic Cloud password  [required]
-  
+
   # HNSW Index Parameters
   --m INTEGER                     HNSW M parameter  [default: 16]
   --ef-construction INTEGER       HNSW efConstruction parameter  [default: 100]
   --num-candidates INTEGER        Number of candidates for search  [default: 100]
   --element-type [float|byte]     Element type for vectors (float: 4 bytes, byte: 1 byte)  [default: float]
-  
+
   # Index Configuration
   --number-of-shards INTEGER      Number of shards  [default: 1]
   --number-of-replicas INTEGER    Number of replicas  [default: 0]
@@ -311,7 +391,7 @@ Options:
   --use-routing BOOLEAN           Whether to use routing  [default: False]
   --use-rescore BOOLEAN           Whether to use rescore  [default: False]
   --oversample-ratio FLOAT        Oversample ratio for rescore  [default: 2.0]
-  
+
   # Common Options
   --case-type [CapacityDim128|CapacityDim960|Performance768D100M|...]
                                   Case type
@@ -401,7 +481,8 @@ Execute tests for the index types: HGraph.
 NUM_PER_BATCH=10000 vectordbbench hologreshgraph --host Hologres_Endpoint --port 80 \
 --user ACCESS_ID --password ACCESS_KEY --database DATABASE_NAME \
 --m 64 --ef-construction 400 --case-type Performance768D10M \
---index-type HGraph --ef-search 400 --k 10 --num-concurrency 1,60,70,75,80,90,95,100,110,120
+--index-type HGraph --ef-search 400 --k 10 --num-concurrency 1,60,70,75,80,90,95,100,105,110,115,120,125,130 \
+--serial-cooldown 3
 ```
 
 To list the options for Hologres, execute `vectordbbench hologreshgraph --help`, The following are some Hologres-specific command-line options.
@@ -491,7 +572,7 @@ Lindorm supports index types: hnsw, ivfpq, or ivfbq.
 ```shell
 vectordbbench lindormhnsw --case-type Performance768D10M --index-name <index_name> --k 10 \
 --host <lindorm_host> --port <lindorm_port> --user <username> --password <password> --m 32 \
---ef-construction 400 --ef-search 150
+--ef-construction 400 --ef-search 150 --reorder-factor 2
 ```
 
 **Example: Run ivfpq index test**
@@ -525,7 +606,126 @@ To list the options for Lindorm, execute `vectordbbench lindormhnsw --help`, The
   --m INTEGER                     hnsw m  [required]
   --ef-construction INTEGER       hnsw ef-construction  [required]
   --ef-search INTEGER             hnsw ef-search  [required]
+  --reorder-factor INTEGER        reorder factor
 ```
+
+### Run ADBPG (Aliyun AnalyticDB for PostgreSQL) from command line
+
+ADBPG Nova uses the fastann/Nova vector index engine with `USING ann` syntax.
+
+**Example: Run novamr index benchmark (BioASQ 1M, 1024-dim)**
+
+```shell
+vectordbbench adbpgnova --case-type Performance1024D1M --k 10 \
+--host <adbpg_host> --port 5432 --db-name postgres \
+--user-name <username> --password <password> \
+--algorithm novamr --hnsw-m 48 --ef-construction 600 \
+--ef-search 130 --max-scan-points 5000 --quantize-rescore-amp 2.0
+```
+
+**Example: Run from config file**
+
+```shell
+vectordbbench adbpgnova --config-file adbpg_bioasq1m_novamr.yml
+```
+
+To list the options for ADBPG, execute `vectordbbench adbpgnova --help`. The following are some ADBPG-specific command-line options.
+
+```text
+  --user-name TEXT                Db username  [required]
+  --password TEXT                 Postgres database password  [$POSTGRES_PASSWORD]
+  --host TEXT                     Db host  [required]
+  --port INTEGER                  Postgres database port  [default: 5432]
+  --db-name TEXT                  Db name  [required]
+  --algorithm TEXT                algorithm  [default: novamr]
+  --hnsw-m INTEGER                hnsw_m  [default: 16]
+  --ef-construction INTEGER       ef_construction  [default: 200]
+  --ef-search INTEGER             ef_search  [default: 100]
+  --max-scan-points INTEGER       max scan points  [default: 2000]
+  --quantize-rescore-amp FLOAT    fastann.quantize_rescore_amp  [default: 1.0]
+  --nova-adaptive-gamma FLOAT     fastann.nova_adaptive_gamma  [default: 0.0]
+  --auto-reduction/--no-auto-reduction  Index WITH auto_reduction=on  [default: False]
+```
+
+### Run PolarDB from command line
+
+PolarDB supports index types: faiss_hnsw_flat, faiss_hnsw_pq, and faiss_hnsw_sq.
+
+**Example: Run faiss_hnsw_flat benchmark**
+
+```shell
+vectordbbench polardbhnswflat \
+  --case-type Performance768D1M \
+  --username <db_user> \
+  --password '<db_password>' \
+  --host <db_host> \
+  --port 3306 \
+  --m 16 \
+  --ef-construction 256 \
+  --ef-search 256 \
+  --insert-workers 64 \
+  --num-concurrency '10,20,40,60,80' \
+  --concurrency-duration 60 \
+  --task-label <task_label> \
+  --db-label <db_label> \
+  --skip-search-serial \
+  --post-load-index
+```
+
+To list the options for PolarDB, execute `vectordbbench polardbhnswflat --help`. The following are some PolarDB-specific command-line options.
+
+```text
+  --username TEXT                  Username  [required]
+  --password TEXT                  Password
+  --host TEXT                      Db host  [default: 127.0.0.1]
+  --port INTEGER                   Db Port  [default: 3306]
+  --database TEXT                  Database name  [default: vectordbbench]
+  --m INTEGER                      M parameter (max_degree) in HNSW
+  --ef-construction INTEGER        ef_construction parameter in HNSW
+  --ef-search INTEGER              polar_vector_index_hnsw_ef_search session variable
+  --insert-workers INTEGER         Number of concurrent threads for data insertion
+  --post-load-index / --inline-index
+                                   Create index after load or inline at table creation
+```
+
+### Run VolcMySQL from command line
+
+VolcMySQL is a MySQL-compatible service with a native `VECTOR` type and an HNSW vector index (created via `SECONDARY_ENGINE_ATTRIBUTE`). Optional quantization is configurable through `--quant-algorithm` (`NONE`, `SQ`, `PQ`) and `--quant-type` (`16_bit`, `8_bit`, `4_bit`, `binary`).
+
+```shell
+vectordbbench volcmysqlhnsw \
+  --case-type Performance1536D50K \
+  --username <db_user> \
+  --password '<db_password>' \
+  --host <db_host> \
+  --port 3306 \
+  --m 16 \
+  --ef-construction 128 \
+  --ef-search 100 \
+  --quant-algorithm SQ \
+  --quant-type 16_bit \
+  --num-concurrency '10,20,40,60,80' \
+  --concurrency-duration 30 \
+  --task-label <task_label> \
+  --db-label <db_label>
+```
+
+To list the options for VolcMySQL, execute `vectordbbench volcmysqlhnsw --help`. The following are some VolcMySQL-specific command-line options.
+
+```text
+  --username TEXT                  Username  [required]
+  --password TEXT                  Password  [required]
+  --host TEXT                      Db host  [default: 127.0.0.1]
+  --port INTEGER                   DB Port  [default: 3306]
+  --m INTEGER                      M parameter in HNSW vector indexing
+  --ef-search INTEGER              Session variable loose_hnsw_ef_search
+  --ef-construction INTEGER        HNSW ef_construction
+  --quant-algorithm [NONE|SQ|PQ]   Quantization algorithm
+  --quant-type [16_bit|8_bit|4_bit|binary]
+                                   Quantization type
+```
+
+> Note: vectors are loaded and queried over the raw-binary `VECTOR` path by default; the client auto-probes server support and falls back to `to_vector()` text when unavailable. Set `VDB_BINARY_VEC=0` to force the text path or `1` to force binary.
 
 #### Using a configuration file.
 
@@ -644,6 +844,17 @@ vectordbbench batchcli --batch-config-file <your-yaml-configuration-file>
 ### Introduction
 To facilitate the presentation of test results and provide a comprehensive performance analysis report, we offer a [leaderboard page](https://zilliz.com/benchmark). It allows us to choose from QPS, QP$, and latency metrics, and provides a comprehensive assessment of a system's performance based on the test results of various cases and a set of scoring mechanisms (to be introduced later). On this leaderboard, we can select the systems and models to be compared, and filter out cases we do not want to consider. Comprehensive scores are always ranked from best to worst, and the specific test results of each query will be presented in the list below.
 
+### Cloud Leaderboard
+
+VectorDBBench now includes Cloud Leaderboard cases for production-oriented cloud vector database evaluation. These cases complement the original raw-performance leaderboard by measuring behaviors that matter for managed services:
+
+- `CloudInsertCase`: insert throughput plus searchable and indexed readiness delays.
+- `CloudPayloadSearchCase`: search performance when responses return IDs only, scalar metadata, or vectors.
+- `CloudMultiTenantSearchCase`: tenant-routed search for SaaS-shaped workloads.
+- `CloudColdLatencyCase`: cold and warm serial latency for first-query and cache-sensitive serving paths.
+
+The May 2026 release note explains why the Cloud Leaderboard was added, what changed, which systems were tested this round, and how to run each new case: [docs/release/2026-05-cloud-leaderboard.md](docs/release/2026-05-cloud-leaderboard.md).
+
 ### Scoring Rules
 
 1. For each case, select a base value and score each system based on relative values.
@@ -721,9 +932,9 @@ Now we can only run one task at the same time.
 ### Code Structure
 ![image](https://github.com/zilliztech/VectorDBBench/assets/105927039/8c06512e-5419-4381-b084-9c93aed59639)
 ### Client
-Our client module is designed with flexibility and extensibility in mind, aiming to integrate APIs from different systems seamlessly. As of now, it supports Milvus, Zilliz Cloud, Elastic Search, Pinecone, Qdrant Cloud, Weaviate Cloud, PgVector, Redis, Chroma, CockroachDB, etc. Stay tuned for more options, as we are consistently working on extending our reach to other systems.
+Our client module is designed with flexibility and extensibility in mind, aiming to integrate APIs from different systems seamlessly. As of now, it supports Milvus, Zilliz Cloud, Elastic Search, Pinecone, Qdrant Cloud, Weaviate Cloud, PgVector, VectorChord, Redis, Chroma, CockroachDB, VolcMySQL, etc. Stay tuned for more options, as we are consistently working on extending our reach to other systems.
 ### Benchmark Cases
-We've developed lots of comprehensive benchmark cases to test vector databases' various capabilities, each designed to give you a different piece of the puzzle. These cases are categorized into four main types:
+We've developed lots of comprehensive benchmark cases to test vector databases' various capabilities, each designed to give you a different piece of the puzzle. These cases are categorized into several main types:
 #### Capacity Case
 - **Large Dim:** Tests the database's loading capacity by inserting large-dimension vectors (GIST 100K vectors, 960 dimensions) until fully loaded. The final number of inserted vectors is reported.
 - **Small Dim:** Similar to the Large Dim case but uses small-dimension vectors (SIFT 500K vectors, 128 dimensions).
@@ -735,6 +946,11 @@ We've developed lots of comprehensive benchmark cases to test vector databases' 
 #### Filtering Search Performance Case
 - **Int-Filter Cases:** Evaluates search performance with int-based filter expression (e.g.  "id >= 2,000").
 - **Label-Filter Cases:** Evaluates search performance with label-based filter expressions (e.g., "color == 'red'"). The test includes randomly generated labels to simulate real-world filtering scenarios.
+#### Full Text Search Performance Case
+- **FullTextSearchPerformance:** Measures BM25-style text retrieval over raw text documents. The case inserts documents, runs the backend optimization or index-readiness step, then measures recall, latency, and QPS for text queries.
+- **Datasets:** The initial FTS benchmark uses MS MARCO and HotpotQA in small, medium, and large corpus sizes.
+- **Ground truth:** Recall, MRR, and NDCG are computed against positive semantic relevance labels from `ir_datasets`.
+- **Payload profiles:** FTS supports IDs-only responses and text payload responses so users can compare pure retrieval throughput against response-size overhead.
 #### Streaming Cases
 - **Insertion-Under-Load Case:** Evaluates search performance while maintaining a constant insertion workload. VDBBench applies a steady stream of insert requests at a fixed rate to simulate real-world scenarios where search operations must perform reliably under continuous data ingestion.
 

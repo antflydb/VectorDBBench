@@ -26,7 +26,7 @@ class ChromaConfig(DBConfig):
 
 
 class ChromaIndexConfig(ChromaConfig, DBCaseConfig):
-    metric_type: MetricType = MetricType.COSINE
+    metric_type: MetricType = "cosine"
     m: int = 16
     ef_construct: int = 100
     ef_search: int | None = 100

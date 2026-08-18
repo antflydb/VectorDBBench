@@ -5,14 +5,22 @@ Usage:
 """
 
 import logging
+import math
 import pathlib
+import types
+import typing
+from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, ClassVar, NamedTuple
 
+import ir_datasets
 import pandas as pd
 import polars as pl
 from pyarrow.parquet import ParquetFile
-from pydantic import field_validator
+from pydantic import Field as PydanticField
+from pydantic import PrivateAttr, field_validator
 
 from vectordb_bench import config
 from vectordb_bench.base import BaseModel
@@ -59,7 +67,7 @@ class BaseDataset(BaseModel):
 
     @field_validator("size")
     @classmethod
-    def verify_size(cls, v: int) -> int:
+    def verify_size(cls, v: int):
         if v not in cls._size_label:
             msg = f"Size {v} not supported for the dataset, expected: {cls._size_label.keys()}"
             raise ValueError(msg)
@@ -105,7 +113,7 @@ class CustomDataset(BaseDataset):
 
     @field_validator("size")
     @classmethod
-    def verify_size(cls, v: int) -> int:
+    def verify_size(cls, v: int):
         return v
 
     @property
@@ -122,6 +130,8 @@ class CustomDataset(BaseDataset):
 
     @property
     def train_files(self) -> list[str]:
+        if ("," not in self.train_file) and self.file_num > 1:
+            return utils.compose_train_files(self.file_num, self.use_shuffled)
         train_file = self.train_file
         prefix = f"{train_file}"
         train_files = []
@@ -138,7 +148,9 @@ class LAION(BaseDataset):
     metric_type: MetricType = MetricType.L2
     use_shuffled: bool = False
     with_gt: bool = True
-    _size_label: ClassVar[dict] = {
+    with_scalar_labels: bool = True
+    scalar_label_percentages: list[float] = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5]
+    _size_label: ClassVar[dict[int, SizeLabel]] = {
         100_000_000: SizeLabel(100_000_000, "LARGE", 100),
     }
 
@@ -148,7 +160,7 @@ class GIST(BaseDataset):
     dim: int = 960
     metric_type: MetricType = MetricType.L2
     use_shuffled: bool = False
-    _size_label: ClassVar[dict] = {
+    _size_label: ClassVar[dict[int, SizeLabel]] = {
         100_000: SizeLabel(100_000, "SMALL", 1),
         1_000_000: SizeLabel(1_000_000, "MEDIUM", 1),
     }
@@ -160,7 +172,7 @@ class Cohere(BaseDataset):
     metric_type: MetricType = MetricType.COSINE
     use_shuffled: bool = config.USE_SHUFFLED_DATA
     with_gt: bool = True
-    _size_label: ClassVar[dict] = {
+    _size_label: ClassVar[dict[int, SizeLabel]] = {
         100_000: SizeLabel(100_000, "SMALL", 1),
         1_000_000: SizeLabel(1_000_000, "MEDIUM", 1),
         10_000_000: SizeLabel(10_000_000, "LARGE", 10),
@@ -198,7 +210,7 @@ class Bioasq(BaseDataset):
     metric_type: MetricType = MetricType.COSINE
     use_shuffled: bool = config.USE_SHUFFLED_DATA
     with_gt: bool = True
-    _size_label: ClassVar[dict] = {
+    _size_label: ClassVar[dict[int, SizeLabel]] = {
         1_000_000: SizeLabel(1_000_000, "MEDIUM", 1),
         10_000_000: SizeLabel(10_000_000, "LARGE", 10),
     }
@@ -234,7 +246,7 @@ class Glove(BaseDataset):
     dim: int = 200
     metric_type: MetricType = MetricType.COSINE
     use_shuffled: bool = False
-    _size_label: ClassVar[dict] = {1_000_000: SizeLabel(1_000_000, "MEDIUM", 1)}
+    _size_label: ClassVar[dict[int, SizeLabel]] = {1_000_000: SizeLabel(1_000_000, "MEDIUM", 1)}
 
 
 class SIFT(BaseDataset):
@@ -242,7 +254,7 @@ class SIFT(BaseDataset):
     dim: int = 128
     metric_type: MetricType = MetricType.L2
     use_shuffled: bool = False
-    _size_label: ClassVar[dict] = {
+    _size_label: ClassVar[dict[int, SizeLabel]] = {
         500_000: SizeLabel(
             500_000,
             "SMALL",
@@ -259,7 +271,7 @@ class OpenAI(BaseDataset):
     metric_type: MetricType = MetricType.COSINE
     use_shuffled: bool = config.USE_SHUFFLED_DATA
     with_gt: bool = True
-    _size_label: ClassVar[dict] = {
+    _size_label: ClassVar[dict[int, SizeLabel]] = {
         50_000: SizeLabel(50_000, "SMALL", 1),
         500_000: SizeLabel(500_000, "MEDIUM", 1),
         5_000_000: SizeLabel(5_000_000, "LARGE", 10),
@@ -338,11 +350,16 @@ class DatasetManager(BaseModel):
     def __iter__(self):
         return DataSetIterator(self)
 
+    def iter_batches(self, batch_size: int):
+        return DataSetIterator(self, batch_size=batch_size)
+
     # TODO passing use_shuffle from outside
     def prepare(
         self,
         source: DatasetSource = DatasetSource.S3,
         filters: Filter = non_filter,
+        with_train_files: bool = True,
+        with_scalar_labels: bool = False,
     ) -> bool:
         """Download the dataset from DatasetSource
          url = f"{source}/{self.data.dir_name}"
@@ -356,7 +373,7 @@ class DatasetManager(BaseModel):
             bool: whether the dataset is successfully prepared
 
         """
-        self.train_files = self.data.train_files
+        self.train_files = self.data.train_files if with_train_files else []
         gt_file, test_file = None, None
         if self.data.with_gt:
             gt_file, test_file = filters.groundtruth_file, self.data.test_file
@@ -373,12 +390,10 @@ class DatasetManager(BaseModel):
                 local_ds_root=self.data_dir,
             )
 
+        needs_scalar_labels = filters.type == FilterOp.StrEqual or with_scalar_labels
+
         # read scalar_labels_file if separated
-        if (
-            filters.type == FilterOp.StrEqual
-            and self.data.with_scalar_labels
-            and self.data.scalar_labels_file_separated
-        ):
+        if needs_scalar_labels and self.data.with_scalar_labels and self.data.scalar_labels_file_separated:
             self.scalar_labels = self._read_file(self.data.scalar_labels_file)
 
         if gt_file is not None and test_file is not None:
@@ -401,8 +416,9 @@ class DatasetManager(BaseModel):
 
 
 class DataSetIterator:
-    def __init__(self, dataset: DatasetManager):
+    def __init__(self, dataset: DatasetManager, batch_size: int = config.NUM_PER_BATCH):
         self._ds = dataset
+        self._batch_size = batch_size
         self._idx = 0  # file number
         self._cur = None
         self._sub_idx = [0 for i in range(len(self._ds.train_files))]  # iter num for each file
@@ -428,7 +444,7 @@ class DataSetIterator:
             msg = f"No such file: {p}"
             log.warning(msg)
             raise IndexError(msg)
-        return ParquetFile(p, memory_map=True, pre_buffer=True).iter_batches(config.NUM_PER_BATCH)
+        return ParquetFile(p, memory_map=True, pre_buffer=True).iter_batches(self._batch_size)
 
     def __next__(self) -> pd.DataFrame:
         """return the data in the next file of the training list"""
@@ -478,6 +494,7 @@ class DatasetWithSizeType(Enum):
     CohereSmall = "Small Cohere (768dim, 100K)"
     CohereMedium = "Medium Cohere (768dim, 1M)"
     CohereLarge = "Large Cohere (768dim, 10M)"
+    LAIONLarge = "Large LAION (768dim, 100M)"
     BioasqMedium = "Medium Bioasq (1024dim, 1M)"
     BioasqLarge = "Large Bioasq (1024dim, 10M)"
     OpenAISmall = "Small OpenAI (1536dim, 50K)"
@@ -491,6 +508,8 @@ class DatasetWithSizeType(Enum):
         return DatasetWithSizeMap.get(self)
 
     def get_load_timeout(self) -> float:
+        if self is DatasetWithSizeType.LAIONLarge:
+            return config.LOAD_TIMEOUT_768D_100M
         if "small" in self.value.lower():
             return config.LOAD_TIMEOUT_768D_100K
         if "medium" in self.value.lower():
@@ -501,6 +520,8 @@ class DatasetWithSizeType(Enum):
         raise KeyError(msg)
 
     def get_optimize_timeout(self) -> float:
+        if self is DatasetWithSizeType.LAIONLarge:
+            return config.OPTIMIZE_TIMEOUT_768D_100M
         if "small" in self.value.lower():
             return config.OPTIMIZE_TIMEOUT_768D_100K
         if "medium" in self.value.lower():
@@ -514,9 +535,668 @@ DatasetWithSizeMap = {
     DatasetWithSizeType.CohereSmall: Dataset.COHERE.manager(100_000),
     DatasetWithSizeType.CohereMedium: Dataset.COHERE.manager(1_000_000),
     DatasetWithSizeType.CohereLarge: Dataset.COHERE.manager(10_000_000),
+    DatasetWithSizeType.LAIONLarge: Dataset.LAION.manager(100_000_000),
     DatasetWithSizeType.BioasqMedium: Dataset.BIOASQ.manager(1_000_000),
     DatasetWithSizeType.BioasqLarge: Dataset.BIOASQ.manager(10_000_000),
     DatasetWithSizeType.OpenAISmall: Dataset.OPENAI.manager(50_000),
     DatasetWithSizeType.OpenAIMedium: Dataset.OPENAI.manager(500_000),
     DatasetWithSizeType.OpenAILarge: Dataset.OPENAI.manager(5_000_000),
 }
+
+
+# FTS Dataset Translator Pattern
+@dataclass
+class FtsQuery:
+    """Internal representation of an FTS query."""
+
+    query_id: str
+    text: str
+
+
+@dataclass
+class FtsDocument:
+    """Internal representation of an FTS document."""
+
+    doc_id: str
+    text: str
+    filter_id: int | None = None
+
+
+_FTS_FILTER_GOLDEN_RATIO_64 = 0x9E3779B97F4A7C15
+_FTS_FILTER_OFFSET_SEED = 0xD1B54A32D192ED03
+
+
+@dataclass(frozen=True)
+class FtsFilterIdPermutation:
+    """Deterministic bijection that scatters FTS filter IDs across corpus order."""
+
+    size: int
+    multiplier: int
+    offset: int
+
+    @property
+    def algorithm(self) -> str:
+        return "affine_permutation_v1"
+
+    @classmethod
+    def for_size(cls, size: int) -> "FtsFilterIdPermutation":
+        if size <= 0:
+            msg = f"FTS filter ID permutation size must be positive, got {size}"
+            raise ValueError(msg)
+        if size == 1:
+            return cls(size=1, multiplier=1, offset=0)
+
+        multiplier = max(1, (size * _FTS_FILTER_GOLDEN_RATIO_64) >> 64)
+        while math.gcd(multiplier, size) != 1:
+            multiplier += 1
+            if multiplier >= size:
+                multiplier = 1
+
+        return cls(
+            size=size,
+            multiplier=multiplier,
+            offset=_FTS_FILTER_OFFSET_SEED % size,
+        )
+
+    def map(self, ordinal: int) -> int:
+        if ordinal < 0 or ordinal >= self.size:
+            msg = f"FTS filter ID ordinal must be in [0, {self.size}), got {ordinal}"
+            raise ValueError(msg)
+        return (self.multiplier * ordinal + self.offset) % self.size
+
+
+class FtsDatasetTranslator(ABC):
+    """Abstract base class for converting ir_datasets schema to internal format.
+
+    This translator pattern allows easy extension to support new datasets
+    (BEIR, TREC, etc.) without modifying core code.
+    """
+
+    @property
+    @abstractmethod
+    def ir_datasets_name(self) -> str:
+        """Return the ir_datasets dataset name.
+
+        Example: 'msmarco-passage/dev/small'
+        """
+
+    @abstractmethod
+    def translate_query(self, ir_query: typing.Any) -> FtsQuery:
+        """Convert ir_datasets query to internal FtsQuery format."""
+
+    @abstractmethod
+    def translate_document(self, ir_doc: typing.Any) -> FtsDocument:
+        """Convert ir_datasets document to internal FtsDocument format."""
+
+    def load(self) -> typing.Any:
+        """Load ir_datasets dataset."""
+        return ir_datasets.load(self.ir_datasets_name)
+
+    def iter_queries(self, dataset: typing.Any) -> Iterator[FtsQuery]:
+        """Iterate over queries in the dataset."""
+        for q in dataset.queries_iter():
+            yield self.translate_query(q)
+
+    def iter_documents(self, dataset: typing.Any) -> Iterator[FtsDocument]:
+        """Iterate over documents in the dataset."""
+        for doc in dataset.docs_iter():
+            yield self.translate_document(doc)
+
+    def load_ground_truth(self, dataset: typing.Any) -> dict[str, dict[str, int]]:
+        """Load positive semantic qrels keyed by query id.
+
+        ir_datasets qrels may contain non-positive judgments. Those are not
+        relevant documents for recall/MRR/NDCG, so they are ignored here.
+        """
+        qrels: dict[str, dict[str, int]] = {}
+        for qrel in dataset.qrels_iter():
+            relevance = int(getattr(qrel, "relevance", 0))
+            if relevance <= 0:
+                continue
+            query_id = str(qrel.query_id)
+            doc_id = str(qrel.doc_id)
+            qrels.setdefault(query_id, {})[doc_id] = max(
+                relevance,
+                qrels.get(query_id, {}).get(doc_id, 0),
+            )
+        return qrels
+
+
+class MSMarcoTranslator(FtsDatasetTranslator):
+    """Translator for MS MARCO passage retrieval dataset."""
+
+    @property
+    def ir_datasets_name(self) -> str:
+        return "msmarco-passage/dev/small"
+
+    def translate_query(self, ir_query: typing.Any) -> FtsQuery:
+        return FtsQuery(query_id=str(ir_query.query_id), text=ir_query.text)
+
+    def translate_document(self, ir_doc: typing.Any) -> FtsDocument:
+        clean_text = ir_doc.text.replace("\t", " ").replace("\n", " ")
+        return FtsDocument(doc_id=str(ir_doc.doc_id), text=clean_text)
+
+
+class HotpotQATranslator(FtsDatasetTranslator):
+    """Translator for BEIR HotpotQA."""
+
+    @property
+    def ir_datasets_name(self) -> str:
+        return "beir/hotpotqa/test"
+
+    def translate_query(self, ir_query: typing.Any) -> FtsQuery:
+        return FtsQuery(query_id=str(ir_query.query_id), text=ir_query.text)
+
+    def translate_document(self, ir_doc: typing.Any) -> FtsDocument:
+        title = getattr(ir_doc, "title", "") or ""
+        text = getattr(ir_doc, "text", "") or ""
+        clean_text = f"{title} {text}".replace("\t", " ").replace("\n", " ").strip()
+        return FtsDocument(doc_id=str(ir_doc.doc_id), text=clean_text)
+
+
+class FtsBaseDataset(BaseModel):
+    """Base class for FTS datasets - completely independent from BaseDataset.
+
+    FTS datasets are text-based and use TSV files instead of parquet files.
+    They don't have vector dimensions; native full-text search uses BM25.
+
+    """
+
+    name: str
+    size: int
+    metric_type: MetricType = MetricType.BM25
+    with_gt: bool = True
+    with_remote_resource: bool = False
+    gt_neighbors_field: str = "neighbors_id"
+
+    _size_label: ClassVar[dict[int, SizeLabel]]
+
+    @field_validator("size")
+    @classmethod
+    def verify_size(cls, v: int):
+        if v not in cls._size_label:
+            msg = f"Size {v} not supported for the FTS dataset, expected: {cls._size_label.keys()}"
+            raise ValueError(msg)
+        return v
+
+    @property
+    def label(self) -> str:
+        """Get size label (SMALL, MEDIUM, LARGE, etc.)"""
+        return self._size_label.get(self.size).label
+
+    @property
+    def full_name(self) -> str:
+        return f"{self.name} FTS ({self.label})"
+
+    @property
+    def dir_name(self) -> str:
+        return f"{self.name}_{self.label}_{utils.numerize(self.size)}".lower()
+
+
+class MSMarcoFts(FtsBaseDataset):
+    name: str = "MS MARCO"
+    with_gt: bool = True
+    with_remote_resource: bool = False
+
+    _size_label: ClassVar[dict[int, SizeLabel]] = {
+        100_000: SizeLabel(100_000, "SMALL", 1),
+        1_000_000: SizeLabel(1_000_000, "MEDIUM", 1),
+        8_841_823: SizeLabel(8_841_823, "LARGE", 1),
+    }
+
+    @property
+    def dir_name(self) -> str:
+        return f"msmarco_{self.label}_{utils.numerize(self.size)}".lower()
+
+
+class HotpotQAFts(FtsBaseDataset):
+    name: str = "HotpotQA"
+    with_gt: bool = True
+    with_remote_resource: bool = False
+
+    _size_label: ClassVar[dict[int, SizeLabel]] = {
+        100_000: SizeLabel(100_000, "SMALL", 1),
+        1_000_000: SizeLabel(1_000_000, "MEDIUM", 1),
+        5_233_329: SizeLabel(5_233_329, "LARGE", 1),
+    }
+
+
+class FtsDatasetManager(BaseModel):
+    """Manager for FTS datasets - independent from DatasetManager.
+
+    Handles FTS dataset preparation using Translator pattern for extensibility.
+
+    Similar to DatasetManager, but for text-based FTS datasets:
+    - queries_data: loaded queries (similar to test_data in vectors)
+    - gt_data: loaded ground truth (similar to gt_data in vectors)
+    - recall_queries_data: recall-valid queries after optional FTS filter
+    - recall_gt_data: recall-valid ground truth after optional FTS filter
+    - translator: dataset-specific translator for schema conversion
+    - _ir_dataset: ir_datasets dataset object for direct access
+    """
+
+    data: FtsBaseDataset
+    _translator: typing.Any = PrivateAttr()
+
+    queries_data: list[FtsQuery] | None = None
+    gt_data: list[dict[str, int]] | None = None
+    recall_queries_data: list[FtsQuery] | None = None
+    recall_gt_data: list[dict[str, int]] | None = None
+    recall_skipped: bool = False
+    recall_skip_reason: str | None = None
+    qrels_data: dict[str, dict[str, int]] = PydanticField(default_factory=dict)
+    required_doc_ids: set[str] = PydanticField(default_factory=set)
+    selected_doc_ids: set[str] | None = None
+    qrel_filter_ids: dict[str, int] = PydanticField(default_factory=dict)
+    filter_stats: dict[str, int | float | str] = PydanticField(default_factory=dict)
+    _ir_dataset: typing.Any = PrivateAttr(default=None)
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        # Initialize translator based on dataset name
+        if isinstance(self.data, MSMarcoFts):
+            self._translator = MSMarcoTranslator()
+        elif isinstance(self.data, HotpotQAFts):
+            self._translator = HotpotQATranslator()
+        else:
+            msg = f"No translator available for dataset: {self.data.name}"
+            raise TypeError(msg)
+
+    def __eq__(self, obj: any):
+        if isinstance(obj, FtsDatasetManager):
+            return self.data.name == obj.data.name and self.data.size == obj.data.size
+        return False
+
+    def __hash__(self) -> int:
+        return hash((self.data.name, self.data.size))
+
+    @property
+    def data_dir(self) -> pathlib.Path:
+        """Get local data directory for this FTS dataset, following vector dataset structure"""
+        return pathlib.Path(
+            config.DATASET_LOCAL_DIR,
+            self.data.name.lower(),
+            self.data.dir_name,
+        )
+
+    def _validate_cap(self, required_doc_ids: set[str], target_size: int) -> None:
+        if len(required_doc_ids) > target_size:
+            msg = (
+                f"{self.data.full_name} size={target_size} is too small for semantic qrels; "
+                f"requires {len(required_doc_ids)} qrel documents"
+            )
+            raise ValueError(msg)
+
+    def _build_selected_doc_ids(self) -> set[str]:
+        """Select the capped corpus while preserving every positive qrel doc."""
+        if self._ir_dataset is None:
+            msg = "ir_datasets dataset not loaded. Call prepare() first."
+            raise RuntimeError(msg)
+
+        required_doc_ids = set(self.required_doc_ids)
+        self._validate_cap(required_doc_ids=required_doc_ids, target_size=self.data.size)
+
+        selected_doc_ids = set(required_doc_ids)
+        found_required_doc_ids: set[str] = set()
+        for doc in self._translator.iter_documents(self._ir_dataset):
+            doc_id = str(doc.doc_id)
+            if doc_id in required_doc_ids:
+                found_required_doc_ids.add(doc_id)
+
+            if doc_id not in selected_doc_ids and len(selected_doc_ids) < self.data.size:
+                selected_doc_ids.add(doc_id)
+
+            if len(selected_doc_ids) >= self.data.size and found_required_doc_ids == required_doc_ids:
+                break
+
+        missing_doc_ids = required_doc_ids - found_required_doc_ids
+        if missing_doc_ids:
+            preview = ", ".join(sorted(missing_doc_ids)[:10])
+            msg = (
+                f"{self.data.full_name} semantic qrel docs missing from corpus: {preview}"
+                f"{'...' if len(missing_doc_ids) > 10 else ''}"
+            )
+            raise ValueError(msg)
+
+        return selected_doc_ids
+
+    def _iter_selected_documents_with_filter_ids(self) -> Iterator[FtsDocument]:
+        """Yield selected documents with the exact filter IDs used for insertion and qrels."""
+        if self._ir_dataset is None:
+            msg = "ir_datasets dataset not loaded. Call prepare() first."
+            raise RuntimeError(msg)
+
+        permutation = FtsFilterIdPermutation.for_size(self.data.size)
+        documents = iter(self._translator.iter_documents(self._ir_dataset))
+        emitted_count = 0
+        while emitted_count < self.data.size:
+            try:
+                doc = next(documents)
+                doc.doc_id = str(doc.doc_id)
+                if self.selected_doc_ids is not None and doc.doc_id not in self.selected_doc_ids:
+                    continue
+                doc.filter_id = permutation.map(emitted_count)
+            except StopIteration:
+                break
+            except Exception as e:
+                log.debug(f"Skipping malformed document: {e}")
+                continue
+
+            emitted_count += 1
+            yield doc
+
+    def _build_qrel_filter_ids(self) -> dict[str, int]:
+        """Map qrel doc IDs to their deterministic permuted FTS filter ID."""
+        if self.selected_doc_ids is None:
+            msg = "selected_doc_ids is required before building FTS filter IDs"
+            raise RuntimeError(msg)
+
+        qrel_doc_ids = set(self.required_doc_ids)
+        qrel_filter_ids: dict[str, int] = {}
+        for doc in self._iter_selected_documents_with_filter_ids():
+            doc_id = doc.doc_id
+            if doc_id in qrel_doc_ids:
+                qrel_filter_ids[doc_id] = doc.filter_id
+
+        missing_doc_ids = qrel_doc_ids - set(qrel_filter_ids)
+        if missing_doc_ids:
+            preview = ", ".join(sorted(missing_doc_ids)[:10])
+            msg = (
+                f"{self.data.full_name} semantic qrel docs missing filter_id assignment: {preview}"
+                f"{'...' if len(missing_doc_ids) > 10 else ''}"
+            )
+            raise ValueError(msg)
+        return qrel_filter_ids
+
+    def _apply_integer_filter_to_qrels(
+        self,
+        queries: list[FtsQuery],
+        ground_truth: list[dict[str, int]],
+        filters: Filter,
+    ) -> tuple[list[FtsQuery], list[dict[str, int]]]:
+        filter_field = getattr(filters, "int_field", "filter_id")
+        if filter_field != "filter_id":
+            msg = f"FTS integer filters require int_field='filter_id', got {filter_field!r}"
+            raise ValueError(msg)
+
+        filter_value = int(filters.int_value)
+        if filter_value < 0 or filter_value > self.data.size:
+            msg = f"FTS filter_id threshold must be in [0, {self.data.size}], got {filter_value}"
+            raise ValueError(msg)
+
+        self.qrel_filter_ids = self._build_qrel_filter_ids()
+        filtered_queries: list[FtsQuery] = []
+        filtered_gt: list[dict[str, int]] = []
+        for query, qrels in zip(queries, ground_truth, strict=True):
+            filtered_qrels = {
+                doc_id: rel for doc_id, rel in qrels.items() if self.qrel_filter_ids.get(doc_id, -1) >= filter_value
+            }
+            if not filtered_qrels:
+                continue
+            filtered_queries.append(query)
+            filtered_gt.append(filtered_qrels)
+
+        matched_doc_count = self.data.size - filter_value
+        filtered_relevant_doc_ids = {doc_id for qrels in filtered_gt for doc_id in qrels}
+        permutation = FtsFilterIdPermutation.for_size(self.data.size)
+        self.filter_stats = {
+            "filter_type": filters.type.value,
+            "filter_field": filter_field,
+            "filter_value": filter_value,
+            "filter_rate": filters.filter_rate,
+            "filter_id_distribution": permutation.algorithm,
+            "filter_id_multiplier": permutation.multiplier,
+            "filter_id_offset": permutation.offset,
+            "matched_doc_count": matched_doc_count,
+            "matched_doc_ratio": round(matched_doc_count / self.data.size, 6),
+            "original_query_count": len(queries),
+            "filtered_query_count": len(filtered_queries),
+            "filtered_query_ratio": round(len(filtered_queries) / len(queries), 6),
+            "original_relevant_doc_count": len(self.required_doc_ids),
+            "filtered_relevant_doc_count": len(filtered_relevant_doc_ids),
+        }
+        log.info(
+            "Applied FTS integer filter %s >= %s: queries %s/%s, relevant docs %s/%s",
+            filter_field,
+            filter_value,
+            len(filtered_queries),
+            len(queries),
+            len(filtered_relevant_doc_ids),
+            len(self.required_doc_ids),
+        )
+        if not filtered_queries:
+            self.recall_skipped = True
+            self.recall_skip_reason = "no_positive_qrels_after_filter"
+        return filtered_queries, filtered_gt
+
+    def _apply_filters_to_qrels(
+        self,
+        queries: list[FtsQuery],
+        ground_truth: list[dict[str, int]],
+        filters: Filter | None,
+    ) -> tuple[list[FtsQuery], list[dict[str, int]]]:
+        self.filter_stats = {}
+        self.qrel_filter_ids = {}
+        self.recall_skipped = False
+        self.recall_skip_reason = None
+        if filters is None or filters.type == FilterOp.NonFilter:
+            return queries, ground_truth
+        if filters.type == FilterOp.NumGE:
+            return self._apply_integer_filter_to_qrels(queries, ground_truth, filters)
+        msg = f"FTS dataset filtering does not support filter type {filters.type}"
+        raise ValueError(msg)
+
+    def prepare(
+        self,
+        source: DatasetSource | None = None,
+        filters: Filter | None = None,
+    ) -> bool:
+        """Prepare FTS dataset for testing using Translator pattern.
+
+        Directly uses ir_datasets API without generating TSV files:
+        1. Downloads dataset using ir_datasets (if needed)
+        2. Loads dataset object using translator
+        3. Loads queries and semantic qrels from ir_datasets
+
+        Args:
+            source: Data source to download from (should be IR_DATASETS for FTS)
+            filters: Optional filters. FTS supports natural semantic GT
+                filtering for integer filter_id cases.
+
+        Returns:
+            bool: True if preparation successful, False otherwise
+        """
+        log.info(f"Preparing FTS dataset: {self.data.full_name}")
+
+        try:
+            # Download dataset if needed (ir_datasets handles caching)
+            if source is not None:
+                reader = source.reader()
+                if reader is not None:
+                    dataset_name = self._translator.ir_datasets_name
+                    # reader.read() will download the dataset if needed
+                    reader.read(dataset_name, [], self.data_dir)
+
+            # Load dataset using translator
+            self._ir_dataset = self._translator.load()
+            log.info(f"Successfully loaded ir_datasets dataset: {self._translator.ir_datasets_name}")
+
+            # Load queries from ir_datasets and semantic ground truth by query id.
+            if self.data.with_gt:
+                all_queries = list(self._translator.iter_queries(self._ir_dataset))
+                log.info(f"Loaded {len(all_queries)} queries into memory")
+
+                self.qrels_data = self._translator.load_ground_truth(self._ir_dataset)
+                self.queries_data = []
+                self.gt_data = []
+                for query in all_queries:
+                    qrels = self.qrels_data.get(query.query_id)
+                    if not qrels:
+                        continue
+                    self.queries_data.append(
+                        FtsQuery(
+                            query_id=query.query_id,
+                            text=query.text,
+                        )
+                    )
+                    self.gt_data.append(qrels)
+
+                if not self.queries_data:
+                    msg = f"{self.data.full_name} has no queries with positive semantic qrels"
+                    raise ValueError(msg)  # noqa: TRY301
+
+                self.required_doc_ids = {doc_id for qrels in self.gt_data for doc_id in qrels}
+                self.selected_doc_ids = self._build_selected_doc_ids()
+                self.recall_queries_data, self.recall_gt_data = self._apply_filters_to_qrels(
+                    self.queries_data,
+                    self.gt_data,
+                    filters,
+                )
+                log.info(
+                    "Loaded semantic qrels for %s queries; recall uses %s queries; "
+                    "selected %s corpus docs including %s qrel docs",
+                    len(self.gt_data),
+                    len(self.recall_gt_data),
+                    len(self.selected_doc_ids),
+                    len(self.required_doc_ids),
+                )
+            else:
+                self.selected_doc_ids = None
+                self.qrel_filter_ids = {}
+                self.filter_stats = {}
+                self.recall_queries_data = None
+                self.recall_gt_data = None
+                self.recall_skipped = False
+                self.recall_skip_reason = None
+
+        except (TypeError, ValueError):
+            log.exception("Invalid FTS dataset configuration")
+            raise
+        except Exception:
+            log.exception("Failed to prepare FTS dataset")
+            return False
+        else:
+            log.debug(f"{self.data.name}: FTS dataset prepared")
+            log.info(f"FTS dataset preparation completed: {self.data.full_name}")
+            return True
+
+    def iter_batches(self, batch_size: int = config.NUM_PER_BATCH):
+        """Return an iterator for streaming FTS document batches."""
+        return FtsDocumentIterator(self, batch_size=batch_size)
+
+    def __iter__(self):
+        """Return iterator for streaming document batches.
+
+        Similar to DatasetManager.__iter__() which returns DataSetIterator.
+        This enables batch-by-batch processing of documents without loading
+        all documents into memory at once.
+
+        Example:
+            >>> manager = FtsDataset.MSMARCO.manager(100_000)
+            >>> for batch in manager:
+            >>>     print(f"Processing {len(batch)} documents")
+        """
+        return self.iter_batches()
+
+
+class FtsDocumentIterator:
+    """Iterator for streaming FTS document batches using Translator pattern.
+
+    Similar to DataSetIterator for vector datasets, but reads directly from ir_datasets
+    using translator. Yields batches of FtsDocument objects for memory-efficient
+    processing of large datasets.
+    """
+
+    def __init__(self, dataset: FtsDatasetManager, batch_size: int = config.NUM_PER_BATCH):
+        self._ds = dataset
+        self._batch_size = batch_size
+        self._finished = False
+        self._docs_iter = None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> list[FtsDocument]:
+        """Return the next batch of documents.
+
+        Returns:
+            list[FtsDocument]: List of FtsDocument objects
+
+        Raises:
+            StopIteration: When all documents have been read
+        """
+        if self._finished:
+            raise StopIteration
+
+        if self._docs_iter is None:
+            self._docs_iter = self._ds._iter_selected_documents_with_filter_ids()
+
+        batch = []
+        while len(batch) < self._batch_size:
+            try:
+                batch.append(next(self._docs_iter))
+            except StopIteration:
+                self._finished = True
+                if batch:
+                    return batch
+                raise
+        return batch
+
+    def __enter__(self):
+        """Enter context manager."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
+        """Exit context manager."""
+
+    def __del__(self):
+        """Cleanup when iterator is destroyed."""
+
+
+class FtsDataset(Enum):
+    MSMARCO = MSMarcoFts
+    HOTPOTQA = HotpotQAFts
+
+    def get(self, size: int) -> FtsBaseDataset:
+        return self.value(size=size)
+
+    def manager(self, size: int) -> FtsDatasetManager:
+        return FtsDatasetManager(data=self.get(size))
+
+
+class FtsDatasetWithSizeType(Enum):
+    MSMarcoSmall = "MS MARCO Small (100K documents)"
+    MSMarcoMedium = "MS MARCO Medium (1M documents)"
+    MSMarcoLarge = "MS MARCO Large (8.8M documents)"
+    HotpotQASmall = "HotpotQA Small (100K documents)"
+    HotpotQAMedium = "HotpotQA Medium (1M documents)"
+    HotpotQALarge = "HotpotQA Large (5.2M documents)"
+
+    def get_manager(self) -> FtsDatasetManager:
+        return {
+            FtsDatasetWithSizeType.MSMarcoSmall: FtsDataset.MSMARCO.manager(100_000),
+            FtsDatasetWithSizeType.MSMarcoMedium: FtsDataset.MSMARCO.manager(1_000_000),
+            FtsDatasetWithSizeType.MSMarcoLarge: FtsDataset.MSMARCO.manager(8_841_823),
+            FtsDatasetWithSizeType.HotpotQASmall: FtsDataset.HOTPOTQA.manager(100_000),
+            FtsDatasetWithSizeType.HotpotQAMedium: FtsDataset.HOTPOTQA.manager(1_000_000),
+            FtsDatasetWithSizeType.HotpotQALarge: FtsDataset.HOTPOTQA.manager(5_233_329),
+        }[self]
+
+    def get_load_timeout(self) -> float:
+        if self in {FtsDatasetWithSizeType.MSMarcoSmall, FtsDatasetWithSizeType.HotpotQASmall}:
+            return config.LOAD_TIMEOUT_768D_100K
+        return config.LOAD_TIMEOUT_DEFAULT
+
+    def get_optimize_timeout(self) -> float:
+        if self in {FtsDatasetWithSizeType.MSMarcoSmall, FtsDatasetWithSizeType.HotpotQASmall}:
+            return config.OPTIMIZE_TIMEOUT_768D_100K
+        return config.OPTIMIZE_TIMEOUT_DEFAULT
+
+    @property
+    def is_advanced(self) -> bool:
+        return self in {FtsDatasetWithSizeType.MSMarcoLarge, FtsDatasetWithSizeType.HotpotQALarge}

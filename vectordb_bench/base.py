@@ -3,4 +3,4 @@ from pydantic import ConfigDict
 
 
 class BaseModel(PydanticBaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True, validate_default=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True)

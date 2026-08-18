@@ -50,6 +50,7 @@ def Chroma(**parameters: Unpack[ChromaTypeDict]):
     run(
         db=DBTYPE,
         db_config=ChromaConfig(
+            db_label=parameters["db_label"],
             user=parameters["user"],
             password=SecretStr(parameters["password"]) if parameters["password"] else None,
             host=SecretStr(parameters["host"]),
