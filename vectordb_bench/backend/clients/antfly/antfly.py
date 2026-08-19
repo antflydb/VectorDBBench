@@ -164,9 +164,8 @@ class Antfly(VectorDB):
                 return
             probe.raise_for_status()
             time.sleep(TABLE_READY_POLL_INTERVAL)
-        raise TimeoutError(
-            "Antfly default full-text index removal did not become visible " f"within {TABLE_READY_TIMEOUT}s"
-        )
+        message = f"Antfly default full-text index removal did not become visible within {TABLE_READY_TIMEOUT}s"
+        raise TimeoutError(message)
 
     def _keep_default_full_text_index(self) -> bool:
         return os.environ.get("ANTFLY_VDBBENCH_KEEP_DEFAULT_FULL_TEXT", "").lower() in {"1", "true", "yes"}
