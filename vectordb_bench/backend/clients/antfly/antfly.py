@@ -133,10 +133,7 @@ class Antfly(VectorDB):
             # index even when the caller supplies no indexes. VectorDBBench is
             # an ANN benchmark, so remove that unrelated replay consumer before
             # loading unless a diagnostic run explicitly asks to retain it.
-            keep_default_full_text = os.environ.get(
-                "ANTFLY_VDBBENCH_KEEP_DEFAULT_FULL_TEXT", ""
-            ).lower() in {"1", "true", "yes"}
-            if not keep_default_full_text:
+            if not self._keep_default_full_text_index():
                 self._remove_default_full_text_index(client)
 
             self._ensure_external_index(client, dim)
@@ -149,19 +146,14 @@ class Antfly(VectorDB):
             client.close()
 
     def _remove_default_full_text_index(self, client: httpx.Client) -> None:
-        path = (
-            f"/tables/{self.collection_name}/indexes/"
-            f"{DEFAULT_FULL_TEXT_INDEX_NAME}"
-        )
+        path = f"/tables/{self.collection_name}/indexes/{DEFAULT_FULL_TEXT_INDEX_NAME}"
         existing = client.get(path)
         if existing.status_code == 404:
             return
         existing.raise_for_status()
 
         response = client.delete(path)
-        log.info(
-            "Remove default full-text index response: %s", response.status_code
-        )
+        log.info("Remove default full-text index response: %s", response.status_code)
         if response.status_code != 404:
             response.raise_for_status()
 
@@ -173,9 +165,11 @@ class Antfly(VectorDB):
             probe.raise_for_status()
             time.sleep(TABLE_READY_POLL_INTERVAL)
         raise TimeoutError(
-            "Antfly default full-text index removal did not become visible "
-            f"within {TABLE_READY_TIMEOUT}s"
+            "Antfly default full-text index removal did not become visible " f"within {TABLE_READY_TIMEOUT}s"
         )
+
+    def _keep_default_full_text_index(self) -> bool:
+        return os.environ.get("ANTFLY_VDBBENCH_KEEP_DEFAULT_FULL_TEXT", "").lower() in {"1", "true", "yes"}
 
     def _ensure_external_index(self, client: httpx.Client, dim: int) -> None:
         """Create the external embeddings index, verifying shard registration.

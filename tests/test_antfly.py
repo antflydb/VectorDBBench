@@ -129,6 +129,13 @@ def test_vector_benchmark_removes_default_full_text_index(monkeypatch):
 
     adapter._remove_default_full_text_index(client)
 
-    assert client.deleted == [
-        "/tables/vdbbench/indexes/full_text_index_v0"
-    ]
+    assert client.deleted == ["/tables/vdbbench/indexes/full_text_index_v0"]
+
+
+def test_vector_benchmark_can_keep_default_full_text_index(monkeypatch):
+    adapter = _adapter()
+
+    monkeypatch.delenv("ANTFLY_VDBBENCH_KEEP_DEFAULT_FULL_TEXT", raising=False)
+    assert adapter._keep_default_full_text_index() is False
+    monkeypatch.setenv("ANTFLY_VDBBENCH_KEEP_DEFAULT_FULL_TEXT", "yes")
+    assert adapter._keep_default_full_text_index() is True
