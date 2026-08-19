@@ -20,9 +20,10 @@ class _CaseConfig:
 
 
 class _Response:
-    is_success = True
-    status_code = 200
-    text = ""
+    def __init__(self, status_code: int = 200):
+        self.status_code = status_code
+        self.is_success = 200 <= status_code < 300
+        self.text = ""
 
     def raise_for_status(self):
         return None
@@ -105,3 +106,29 @@ def test_write_readiness_probe_does_not_create_a_tombstone():
         "inserts": {"key:__circus_write_probe__": {"id": -1}},
         "sync_level": "write",
     }
+
+
+def test_vector_benchmark_removes_default_full_text_index(monkeypatch):
+    adapter = _adapter()
+
+    class Client:
+        def __init__(self):
+            self.present = True
+            self.deleted = []
+
+        def get(self, path: str):
+            return _Response(200 if self.present else 404)
+
+        def delete(self, path: str):
+            self.deleted.append(path)
+            self.present = False
+            return _Response(204)
+
+    client = Client()
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    adapter._remove_default_full_text_index(client)
+
+    assert client.deleted == [
+        "/tables/vdbbench/indexes/full_text_index_v0"
+    ]
